@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}{{ portfolio.name }} · Paper Trading{% endblock %}
+
+{% macro money(value, decimals=2) -%}
+  ₹{{ "{:,.{d}f}".format(value, d=decimals) }}
+{%- endmacro %}
+
+{% macro pct(value) -%}
+  <span class="{% if value > 0 %}text-up{% elif value < 0 %}text-down{% else %}text-slate-400{% endif %}">
+    {{ "{:+.2f}".format(value) }}%
+  </span>
+{%- endmacro %}
+
+{% block content %}
+<a href="/" class="text-xs text-slate-400 hover:text-white">&larr; All portfolios</a>
+
+<header class="mt-2 mb-4">
+  <h1 class="text-xl font-semibold">{{ portfolio.name }}</h1>
+  <div class="text-xs text-slate-400 mt-1">
+    Strategy <span class="font-mono text-slate-300">{{ portfolio.strategy_id }}</span>
+    · Capital {{ money(portfolio.capital, 0) }}
+    {% if not portfolio.enabled %}<span class="ml-2 px-1.5 py-0.5 bg-down/10 text-down rounded">disabled</span>{% endif %}
+  </div>
+</header>
+
+<!-- Top stats -->
+<section class="bg-ink-soft rounded-xl p-4 border border-white/5 mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm"
+         hx-get="/api/portfolio/{{ portfolio.id }}/state"
+         hx-trigger="every 15s"
+         hx-swap="none">
+  <div>
+    <div class="text-xs text-slate-400 uppercase">Equity</div>
+    <div class="font-mono font-semibold mt-0.5">{{ money(eq.equity) }}</div>
+  </div>
+  <div>
+    <div class="text-xs text-slate-400 uppercase">Cash</div>
+    <div class="font-mono font-semibold mt-0.5">{{ money(eq.cash) }}</div>
+  </div>
+  <div>
+    <div class="text-xs text-slate-400 uppercase">Holdings</div>
+    <div class="font-mono font-semibold mt-0.5">{{ money(eq.holdings_value) }}</div>
+  </div>
+  <div>
+    <div class="text-xs text-slate-400 uppercase">Open</div>
+    <div class="font-mono font-semibold mt-0.5">{{ eq.open_positions }}</div>
+  </div>
+</section>
+
+<!-- Equity chart -->
+<section class="bg-ink-soft rounded-xl p-4 border border-white/5 mb-4">
+  <div class="text-xs text-slate-400 uppercase mb-2">Equity curve</div>
+  <div id="equity-chart" class="h-56 md:h-64"></div>
+</section>
+
+<!-- Holdings -->
+<section class="bg-ink-soft rounded-xl border border-white/5 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-white/5 text-sm font-semibold">Holdings</div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-400 uppercase">
+        <tr class="border-b border-white/5">
+          <th class="text-left px-4 py-2">Symbol</th>
+          <th class="text-right px-4 py-2">Qty</th>
+          <th class="text-right px-4 py-2">Avg</th>
+          <th class="text-right px-4 py-2">LTP</th>
+          <th class="text-right px-4 py-2">Value</th>
+          <th class="text-right px-4 py-2">P&amp;L</th>
+          <th class="text-right px-4 py-2 hidden md:table-cell">Tier/Pyr</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for h in holdings %}
+        <tr class="border-b border-white/5">
+          <td class="px-4 py-2 font-medium">{{ h.symbol }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ h.qty }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(h.avg_price) }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(h.last) }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ money(h.market_value) }}</td>
+          <td class="px-4 py-2 text-right font-mono
+                     {% if h.pnl > 0 %}text-up{% elif h.pnl < 0 %}text-down{% endif %}">
+            {{ "{:+,.0f}".format(h.pnl) }} ({{ pct(h.pnl_pct) }})
+          </td>
+          <td class="px-4 py-2 text-right text-xs text-slate-400 hidden md:table-cell">
+            {{ h.tiers_hit }}/{{ h.pyramid_adds_hit }}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-sm">No open positions.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Recent trades -->
+<section class="bg-ink-soft rounded-xl border border-white/5 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-white/5 text-sm font-semibold flex items-center justify-between">
+    <span>Recent trades</span>
+    <a href="/trades" class="text-xs text-slate-400 hover:text-white">All trades →</a>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-400 uppercase">
+        <tr class="border-b border-white/5">
+          <th class="text-left px-4 py-2">When</th>
+          <th class="text-left px-4 py-2">Symbol</th>
+          <th class="text-left px-4 py-2">Side</th>
+          <th class="text-right px-4 py-2">Qty</th>
+          <th class="text-right px-4 py-2">Price</th>
+          <th class="text-left px-4 py-2 hidden md:table-cell">Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for t in recent_trades %}
+        <tr class="border-b border-white/5">
+          <td class="px-4 py-2 font-mono text-xs">{{ t.ts.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="px-4 py-2 font-medium">{{ t.symbol }}</td>
+          <td class="px-4 py-2 {% if t.side == 'BUY' %}text-up{% else %}text-down{% endif %}">{{ t.side }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ t.qty }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(t.price) }}</td>
+          <td class="px-4 py-2 hidden md:table-cell text-xs text-slate-400">{{ t.reason }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500 text-sm">No trades yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(async () => {
+  const el = document.getElementById('equity-chart');
+  if (!el) return;
+  const res = await fetch("/api/portfolio/{{ portfolio.id }}/equity");
+  if (!res.ok) return;
+  const data = await res.json();
+  if (!data.length) { el.innerHTML = '<div class="text-slate-500 text-sm h-full flex items-center justify-center">No equity history yet.</div>'; return; }
+  const chart = LightweightCharts.createChart(el, {
+    layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+    grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+    timeScale: { timeVisible: true, secondsVisible: false },
+    rightPriceScale: { borderVisible: false },
+  });
+  const series = chart.addAreaSeries({ lineColor: '#3b82f6', topColor: 'rgba(59,130,246,0.4)', bottomColor: 'rgba(59,130,246,0.0)' });
+  series.setData(data.map(d => ({ time: Math.floor(new Date(d.ts).getTime() / 1000), value: d.equity })));
+  chart.timeScale().fitContent();
+  new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight })).observe(el);
+})();
+</script>
+{% endblock %}

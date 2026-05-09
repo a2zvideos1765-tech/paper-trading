@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Login · Paper Trading{% endblock %}
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <form method="post" action="/login"
+        class="w-full max-w-sm bg-ink-soft rounded-xl p-6 border border-white/5 shadow-lg">
+    <h1 class="text-lg font-semibold mb-4">Sign in</h1>
+    {% if error %}
+      <div class="mb-3 text-sm text-down bg-down/10 border border-down/20 rounded px-3 py-2">{{ error }}</div>
+    {% endif %}
+    <label class="block text-sm text-slate-300 mb-1" for="password">Password</label>
+    <input id="password" name="password" type="password" autofocus required
+           class="w-full bg-ink rounded border border-white/10 px-3 py-2 text-sm
+                  focus:outline-none focus:border-accent">
+    <button class="w-full mt-4 bg-accent hover:bg-accent/90 rounded py-2 text-sm font-medium">
+      Continue
+    </button>
+  </form>
+</div>
+{% endblock %}

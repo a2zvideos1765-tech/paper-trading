@@ -1,0 +1,23 @@
+# Universe of symbols the paper trader watches.
+# `token` is the Angel SmartAPI numeric token; `exchange` is "NSE" for equities.
+# For initial bring-up we ship a small list — the full list comes from
+# data/angel_token_map.csv copied in from the existing algo project.
+#
+# Add or remove rows here and restart paperaglo-poller + paperaglo-trader.
+
+symbols:
+  - { symbol: RELIANCE,  token: "2885",  exchange: NSE }
+  - { symbol: TCS,       token: "11536", exchange: NSE }
+  - { symbol: HDFCBANK,  token: "1333",  exchange: NSE }
+  - { symbol: INFY,      token: "1594",  exchange: NSE }
+  - { symbol: ICICIBANK, token: "4963",  exchange: NSE }
+  - { symbol: ITC,       token: "1660",  exchange: NSE }
+  - { symbol: SBIN,      token: "3045",  exchange: NSE }
+  - { symbol: BHARTIARTL, token: "10604", exchange: NSE }
+  - { symbol: LT,        token: "11483", exchange: NSE }
+  - { symbol: KOTAKBANK, token: "1922",  exchange: NSE }
+
+# Indices for regime gates used by some strategies (S15, S28-S33).
+indices:
+  - { symbol: NIFTY_50, token: "99926000", exchange: NSE }
+  - { symbol: SENSEX,   token: "99919000", exchange: BSE }

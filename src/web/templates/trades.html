@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Trades · Paper Trading{% endblock %}
+{% block content %}
+<header class="flex items-end justify-between mb-4">
+  <h1 class="text-xl font-semibold">All trades</h1>
+  <div class="text-xs text-slate-400">last {{ limit }}</div>
+</header>
+
+<section class="bg-ink-soft rounded-xl border border-white/5 overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-400 uppercase">
+        <tr class="border-b border-white/5">
+          <th class="text-left px-4 py-2">When</th>
+          <th class="text-left px-4 py-2">Portfolio</th>
+          <th class="text-left px-4 py-2">Symbol</th>
+          <th class="text-left px-4 py-2">Side</th>
+          <th class="text-right px-4 py-2">Qty</th>
+          <th class="text-right px-4 py-2">Price</th>
+          <th class="text-right px-4 py-2 hidden md:table-cell">Charges</th>
+          <th class="text-left px-4 py-2 hidden md:table-cell">Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for t in trades %}
+        <tr class="border-b border-white/5">
+          <td class="px-4 py-2 font-mono text-xs">
+            <a href="/diagnose/{{ t.portfolio_id }}/{{ t.symbol }}/{{ t.ts.isoformat() }}"
+               class="hover:text-accent">
+              {{ t.ts.strftime("%Y-%m-%d %H:%M") }}
+            </a>
+          </td>
+          <td class="px-4 py-2"><a href="/portfolio/{{ t.portfolio_id }}" class="hover:text-accent">{{ t.portfolio_name }}</a></td>
+          <td class="px-4 py-2 font-medium">{{ t.symbol }}</td>
+          <td class="px-4 py-2 {% if t.side == 'BUY' %}text-up{% else %}text-down{% endif %}">{{ t.side }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ t.qty }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(t.price) }}</td>
+          <td class="px-4 py-2 text-right font-mono hidden md:table-cell">{{ "{:,.2f}".format(t.charges) }}</td>
+          <td class="px-4 py-2 hidden md:table-cell text-xs text-slate-400">{{ t.reason }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8" class="px-4 py-8 text-center text-slate-500">No trades yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

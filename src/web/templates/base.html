@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1d29">
+  <title>{% block title %}Paper Trading{% endblock %}</title>
+
+  <!-- Tailwind via Play CDN; zero-build, perfectly fine for a personal dashboard -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            // Kite-ish palette
+            ink: { DEFAULT: '#1a1d29', soft: '#23283a' },
+            up:   '#10b981',
+            down: '#ef4444',
+            accent: '#3b82f6',
+          },
+          fontFamily: {
+            sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- HTMX for live polling without writing fetch() ourselves -->
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+
+  <!-- TradingView Lightweight Charts for the equity curve -->
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="bg-ink text-slate-100 font-sans antialiased min-h-screen">
+  <header class="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/5">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2 font-semibold">
+        <span class="inline-block w-2 h-2 rounded-full bg-accent"></span>
+        <span>Paper Trading</span>
+      </a>
+      <nav class="hidden md:flex items-center gap-5 text-sm">
+        <a href="/" class="hover:text-white text-slate-300">Dashboard</a>
+        <a href="/trades" class="hover:text-white text-slate-300">Trades</a>
+        <a href="/health" class="hover:text-white text-slate-300">Health</a>
+        <form action="/logout" method="post" class="inline">
+          <button class="text-slate-400 hover:text-white">Logout</button>
+        </form>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-4 pb-24 md:pb-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Mobile bottom nav -->
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-ink border-t border-white/5 z-20">
+    <div class="grid grid-cols-3 text-xs">
+      <a href="/" class="py-3 text-center text-slate-300 hover:text-white">Home</a>
+      <a href="/trades" class="py-3 text-center text-slate-300 hover:text-white">Trades</a>
+      <a href="/health" class="py-3 text-center text-slate-300 hover:text-white">Health</a>
+    </div>
+  </nav>
+</body>
+</html>

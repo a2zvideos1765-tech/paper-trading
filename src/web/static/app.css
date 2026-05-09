@@ -1,0 +1,17 @@
+/* Tiny supplementary stylesheet — Tailwind covers most things via the CDN. */
+
+html { -webkit-text-size-adjust: 100%; }
+
+/* iOS safe-area for the bottom nav */
+@supports (padding: env(safe-area-inset-bottom)) {
+  nav.fixed.bottom-0 { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* Tighten table padding on small screens */
+@media (max-width: 640px) {
+  table th, table td { padding-left: 0.75rem; padding-right: 0.75rem; }
+}
+
+/* Hide scrollbar on horizontal table scroll wrappers but keep scrolling */
+.overflow-x-auto::-webkit-scrollbar { height: 6px; }
+.overflow-x-auto::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 6px; }

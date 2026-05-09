@@ -1,0 +1,30 @@
+# Replace paper.studiohappens.tech with your actual domain. Caddy fetches Let's Encrypt
+# certs automatically the first time it boots.
+#
+# Install on the VPS:
+#   sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+#   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+#     | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+#   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+#     | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+#   sudo apt update && sudo apt install caddy
+#
+#   sudo cp Caddyfile.example /etc/caddy/Caddyfile     # then edit the domain
+#   sudo systemctl reload caddy
+
+paper.studiohappens.tech {
+    encode gzip zstd
+
+    # FastAPI lives on localhost:8000 (WEB_PORT in .env).
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Real-IP {remote_host}
+    }
+
+    # Reasonable defaults for a small dashboard.
+    log {
+        output file /var/log/caddy/paperaglo.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}

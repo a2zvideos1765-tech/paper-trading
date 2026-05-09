@@ -1,0 +1,39 @@
+# Each entry creates one paper-trading portfolio. The trader picks these up
+# on boot and inserts any missing rows into the `portfolios` table.
+#
+# To swap strategies after the backtest finishes:
+#   1. Edit this file
+#   2. `pm2 restart paperaglo-trader`
+# Old portfolios stay in the DB (their history is preserved) but become
+# `enabled: false` automatically if removed from this file.
+
+portfolios:
+  # ── S1: 2-tier pyramid (-10/-15), 50% at +25%, 50% at +40% ─────────
+  - name: S1_user_pyramid_50k
+    strategy: S1_user_pyramid
+    capital: 50000
+    enabled: true
+  - name: S1_user_pyramid_100k
+    strategy: S1_user_pyramid
+    capital: 100000
+    enabled: true
+
+  # ── S6: single entry, 3-tier exit (33% at +15%, 50% at +30%, all +50%) ──
+  - name: S6_tiered_exit_50k
+    strategy: S6_tiered_exit
+    capital: 50000
+    enabled: true
+  - name: S6_tiered_exit_100k
+    strategy: S6_tiered_exit
+    capital: 100000
+    enabled: true
+
+  # ── S10: -5% drop AND RSI(14) < 35 ─────────────────────────────────
+  - name: S10_rsi_filter_50k
+    strategy: S10_rsi_filter
+    capital: 50000
+    enabled: true
+  - name: S10_rsi_filter_100k
+    strategy: S10_rsi_filter
+    capital: 100000
+    enabled: true

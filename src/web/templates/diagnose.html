@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Diagnose · Paper Trading{% endblock %}
+{% block content %}
+<a href="/portfolio/{{ portfolio.id }}" class="text-xs text-slate-400 hover:text-white">&larr; {{ portfolio.name }}</a>
+
+<header class="mt-2 mb-4">
+  <h1 class="text-xl font-semibold">Diagnose · {{ symbol }}</h1>
+  <div class="text-xs text-slate-400 mt-1">
+    {{ ts.strftime("%Y-%m-%d %H:%M %Z") }} · portfolio <span class="font-mono">{{ portfolio.name }}</span> · strategy <span class="font-mono">{{ portfolio.strategy_id }}</span>
+  </div>
+</header>
+
+<!-- Strategy parameters in effect -->
+{% if strategy %}
+<section class="bg-ink-soft rounded-xl p-4 border border-white/5 mb-4">
+  <div class="text-xs text-slate-400 uppercase mb-2">Strategy parameters</div>
+  <pre class="text-xs font-mono text-slate-200 overflow-x-auto">{{ strategy }}</pre>
+</section>
+{% else %}
+<section class="bg-down/10 border border-down/30 rounded-xl p-4 mb-4 text-sm text-down">
+  Strategy <code>{{ portfolio.strategy_id }}</code> not found in registry. The portfolio
+  is referencing a strategy that's no longer in <code>src/strategies/</code> — add it back
+  or disable this portfolio in <code>config/portfolios.yaml</code>.
+</section>
+{% endif %}
+
+<!-- Trades fired around this timestamp -->
+<section class="bg-ink-soft rounded-xl border border-white/5 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-white/5 text-sm font-semibold">Trades within ±5 min</div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-400 uppercase">
+        <tr class="border-b border-white/5">
+          <th class="text-left px-4 py-2">When</th>
+          <th class="text-left px-4 py-2">Side</th>
+          <th class="text-right px-4 py-2">Qty</th>
+          <th class="text-right px-4 py-2">Price</th>
+          <th class="text-left px-4 py-2">Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for t in trades %}
+        <tr class="border-b border-white/5">
+          <td class="px-4 py-2 font-mono text-xs">{{ t.ts.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+          <td class="px-4 py-2 {% if t.side == 'BUY' %}text-up{% else %}text-down{% endif %}">{{ t.side }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ t.qty }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(t.price) }}</td>
+          <td class="px-4 py-2 text-xs text-slate-400">{{ t.reason }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="px-4 py-4 text-center text-slate-500 text-sm">No trades in this window.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Surrounding candles -->
+<section class="bg-ink-soft rounded-xl border border-white/5 overflow-hidden">
+  <div class="px-4 py-3 border-b border-white/5 text-sm font-semibold">Surrounding candles (±30 min)</div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-400 uppercase">
+        <tr class="border-b border-white/5">
+          <th class="text-left px-4 py-2">Ts</th>
+          <th class="text-left px-4 py-2">Int</th>
+          <th class="text-right px-4 py-2">Open</th>
+          <th class="text-right px-4 py-2">High</th>
+          <th class="text-right px-4 py-2">Low</th>
+          <th class="text-right px-4 py-2">Close</th>
+          <th class="text-right px-4 py-2">Vol</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for b in bars %}
+        <tr class="border-b border-white/5 {% if (b.ts - ts).total_seconds()|abs < 60 %}bg-accent/5{% endif %}">
+          <td class="px-4 py-2 font-mono text-xs">{{ b.ts.strftime("%H:%M") }}</td>
+          <td class="px-4 py-2 font-mono text-xs">{{ b.interval }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(b.open) }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(b.high) }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(b.low) }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(b.close) }}</td>
+          <td class="px-4 py-2 text-right font-mono">{{ "{:,}".format(b.volume) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="px-4 py-4 text-center text-slate-500 text-sm">No candles in this window.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
