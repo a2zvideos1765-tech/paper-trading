@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.core.config import settings
@@ -46,7 +46,8 @@ def setup_logging(app: str) -> logging.Logger:
     """Initialise root logger for an app (poller/trader/web/backfill).
     Writes JSON to stdout (PM2 picks this up) AND to logs/{date}/{app}.log.
     """
-    log_dir = settings.log_dir / datetime.now().strftime("%Y-%m-%d")
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    log_dir = settings.log_dir / datetime.now(_IST).strftime("%Y-%m-%d")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{app}.log"
 

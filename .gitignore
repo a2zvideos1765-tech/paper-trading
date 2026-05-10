@@ -2,7 +2,7 @@
 .env
 .env.*
 .env.example
-
+.mcp.json
 # python
 __pycache__/
 *.pyc
