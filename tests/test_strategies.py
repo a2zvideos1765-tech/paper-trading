@@ -17,9 +17,31 @@ from src.engine.v2_engine import StrategyV2  # noqa: E402
 from src.strategies.registry import all_strategies, get, names  # noqa: E402
 
 
-def test_registry_loads_three_strategies():
+def test_registry_loads_all_strategies():
     reg = all_strategies()
-    assert set(reg.keys()) == {"S1_user_pyramid", "S6_tiered_exit", "S10_rsi_filter"}
+    assert set(reg.keys()) == {
+        "S1_user_pyramid",
+        "S6_tiered_exit",
+        "S10_rsi_filter",
+        "S14_concentrated",
+        "S23_s20_equity8",
+        "S28_s23_nifty",
+        "S29_s23_sensex",
+        "S31_s24_persist",
+    }
+
+
+def test_default_portfolio_strategies_are_registered():
+    """The 5 strategies referenced in config/portfolios.yaml must all resolve."""
+    for name in (
+        "S6_tiered_exit",
+        "S14_concentrated",
+        "S23_s20_equity8",
+        "S29_s23_sensex",
+        "S31_s24_persist",
+    ):
+        s = get(name)
+        assert s.name == name
 
 
 def test_each_is_a_strategyv2_instance():
@@ -55,3 +77,62 @@ def test_s10_parameters_match_upstream():
     assert s.fall_threshold == -0.05
     assert s.rsi_max == 35.0
     assert s.exit_tiers == ((0.30, 1.0),)
+
+
+def test_s14_parameters_match_upstream():
+    s = get("S14_concentrated")
+    assert s.fall_threshold == -0.05
+    assert s.exit_tiers == ((0.35, 1.0),)
+    assert s.max_new_buys_per_day == 1
+    assert s.allocation_per_trade == 25000.0
+
+
+def test_s23_parameters_match_upstream():
+    s = get("S23_s20_equity8")
+    assert s.fall_threshold == -0.05
+    assert s.volume_spike_min == 1.3
+    assert s.pyramid_levels == ((-0.10, 0.04),)
+    assert s.pyramid_basis == "avg"
+    assert s.pyramid_volume_filter is True
+    assert s.exit_tiers == ((0.25, 0.5), (0.40, 1.0))
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.08
+
+
+def test_s28_parameters_match_upstream():
+    s = get("S28_s23_nifty")
+    # S28 = S23 + NIFTY regime gate; everything else identical.
+    assert s.fall_threshold == -0.05
+    assert s.volume_spike_min == 1.3
+    assert s.pyramid_levels == ((-0.10, 0.04),)
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.08
+    assert s.regime_filter is True
+    assert s.regime_source == "NIFTY_50"
+
+
+def test_s29_parameters_match_upstream():
+    s = get("S29_s23_sensex")
+    # S29 = S23 + SENSEX regime gate; A/B partner of S28.
+    assert s.fall_threshold == -0.05
+    assert s.volume_spike_min == 1.3
+    assert s.pyramid_levels == ((-0.10, 0.04),)
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.08
+    assert s.regime_filter is True
+    assert s.regime_source == "SENSEX"
+
+
+def test_s31_parameters_match_upstream():
+    s = get("S31_s24_persist")
+    assert s.fall_threshold == -0.05
+    assert s.volume_spike_min is None
+    assert s.pyramid_levels == ((-0.10, 0.04),)
+    assert s.pyramid_volume_filter is False
+    assert s.exit_tiers == ((0.25, 0.5), (0.40, 1.0))
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.08
+    assert s.entry_mode == "trigger"
+    assert s.trigger_window == ("09:30", "15:00")
+    assert s.trigger_persistence_candles == 3
+    assert s.trigger_persistence_threshold == -0.03

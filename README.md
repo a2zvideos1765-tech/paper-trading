@@ -58,7 +58,8 @@ $EDITOR .env   # fill in Angel creds, dashboard password, session secret
 psql -U paper -d paper_trading -h 127.0.0.1 -f sql/001_schema.sql
 psql -U paper -d paper_trading -h 127.0.0.1 -f sql/002_timescale.sql   # optional
 
-# 5. One-shot history bulk-load (copy CSVs from the backtester project first)
+# 5. One-shot history bulk-load
+#    Either: copy CSVs onto the VPS first, or upload from your dev box (next section)
 mkdir -p data/angel_symbols
 cp ~/i-want-to-build-an-algo/data/angel_symbols/*.csv data/angel_symbols/
 python -m tools.load_history --src ./data/angel_symbols --interval 5m
@@ -77,6 +78,43 @@ pm2 startup    # enable auto-start on reboot
 python -m tools.verify_setup
 ```
 
+## Uploading historical CSVs from your Windows dev box
+
+If your CSVs live on your local machine (the backtester runs there), push them
+straight to the VPS Postgres over an SSH tunnel — no need to expose 5432 to the
+internet. The wrapper opens the tunnel, runs the loader, tears the tunnel down:
+
+```powershell
+# from the paper-trading repo root, on Windows:
+.\tools\upload_to_vps.ps1 -VpsUser ubuntu -VpsHost 203.0.113.10
+# prompts for the Postgres password (paper user)
+
+# explicit options:
+.\tools\upload_to_vps.ps1 `
+    -VpsUser ubuntu -VpsHost paper.studiohappens.tech `
+    -Src ..\i-want-to-build-an-algo\data\angel_symbols `
+    -Interval 5m `
+    -PgUser paper -PgDb paper_trading
+```
+
+Requirements on the Windows side:
+- OpenSSH client (built in to Windows 10/11) and an SSH key registered on the VPS
+- `pip install -r requirements.txt` in a local venv (only `asyncpg`, `pandas`,
+  `python-dotenv` are actually used by the loader — Angel/dashboard secrets are
+  not required on the upload machine)
+
+Re-running is safe: every row goes through `ON CONFLICT (symbol, interval, ts) DO NOTHING`.
+
+If you'd rather skip the wrapper, you can call the loader directly with explicit
+DB flags after opening your own tunnel (`ssh -L 6543:127.0.0.1:5432 ubuntu@vps`):
+
+```powershell
+$env:PG_PASSWORD = "..."
+python -m tools.load_history `
+    --src .\data\angel_symbols --interval 5m `
+    --pg-host 127.0.0.1 --pg-port 6543 --pg-user paper --pg-db paper_trading
+```
+
 ## Daily operations
 
 ```bash
@@ -87,31 +125,33 @@ psql -U paper paper_trading -c \
   "SELECT count(*), portfolio_id FROM trades GROUP BY portfolio_id ORDER BY portfolio_id"
 ```
 
+## Default portfolios
+
+The 5 strategies in `config/portfolios.yaml` (each at ₹50k and ₹100k = 10
+portfolios) are: **S6_tiered_exit**, **S14_concentrated**, **S23_s20_equity8**,
+**S29_s23_sensex**, **S31_s24_persist**. Swap them after the backtest finishes
+by editing the YAML and `pm2 restart paperaglo-trader`.
+
 ## Adding a new strategy
 
 ```python
-# src/strategies/s14_concentrated.py
+# src/strategies/s99_my_idea.py
 from src.engine.v2_engine import StrategyV2
 
 STRATEGY = StrategyV2(
-    name="S14_concentrated",
-    fall_threshold=-0.05,
-    exit_tiers=((0.35, 1.0),),
-    max_new_buys_per_day=1,
-    allocation_per_trade=25000.0,
+    name="S99_my_idea",
+    fall_threshold=-0.06,
+    exit_tiers=((0.20, 1.0),),
+    allocation_per_trade=10000.0,
 )
-DESCRIPTION = "Max 1 buy/day on deepest drop, ₹25k allocation, +35% exit."
+DESCRIPTION = "Single buy on -6%, sell all at +20%."
 ```
 
 ```yaml
 # config/portfolios.yaml
-- name: S14_concentrated_50k
-  strategy: S14_concentrated
+- name: S99_my_idea_50k
+  strategy: S99_my_idea
   capital: 50000
-  enabled: true
-- name: S14_concentrated_100k
-  strategy: S14_concentrated
-  capital: 100000
   enabled: true
 ```
 

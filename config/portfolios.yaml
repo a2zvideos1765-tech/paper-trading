@@ -1,24 +1,19 @@
-# Each entry creates one paper-trading portfolio. The trader picks these up
-# on boot and inserts any missing rows into the `portfolios` table.
+# Active paper-trading portfolios. Each entry produces one portfolio in the DB
+# (UPSERT by name on trader startup). Anything not in this file is auto-disabled.
+#
+# Default selection (5 strategies × 2 capitals = 10 portfolios):
+#   S6_tiered_exit  — single buy on -5%, 33%/50%/100% at +15%/+30%/+50%
+#   S14_concentrated — max 1 buy/day on deepest drop, ₹25k, +35%
+#   S23_s20_equity8 — % of equity sizing, vol-confirmed pyramid
+#   S29_s23_sensex  — S23 + SENSEX regime gate
+#   S31_s24_persist — trigger-mode entry + 3-candle persistence filter
 #
 # To swap strategies after the backtest finishes:
 #   1. Edit this file
 #   2. `pm2 restart paperaglo-trader`
-# Old portfolios stay in the DB (their history is preserved) but become
-# `enabled: false` automatically if removed from this file.
 
 portfolios:
-  # ── S1: 2-tier pyramid (-10/-15), 50% at +25%, 50% at +40% ─────────
-  - name: S1_user_pyramid_50k
-    strategy: S1_user_pyramid
-    capital: 50000
-    enabled: true
-  - name: S1_user_pyramid_100k
-    strategy: S1_user_pyramid
-    capital: 100000
-    enabled: true
-
-  # ── S6: single entry, 3-tier exit (33% at +15%, 50% at +30%, all +50%) ──
+  # ── S6_tiered_exit ──
   - name: S6_tiered_exit_50k
     strategy: S6_tiered_exit
     capital: 50000
@@ -28,12 +23,42 @@ portfolios:
     capital: 100000
     enabled: true
 
-  # ── S10: -5% drop AND RSI(14) < 35 ─────────────────────────────────
-  - name: S10_rsi_filter_50k
-    strategy: S10_rsi_filter
+  # ── S14_concentrated ──
+  - name: S14_concentrated_50k
+    strategy: S14_concentrated
     capital: 50000
     enabled: true
-  - name: S10_rsi_filter_100k
-    strategy: S10_rsi_filter
+  - name: S14_concentrated_100k
+    strategy: S14_concentrated
+    capital: 100000
+    enabled: true
+
+  # ── S23_s20_equity8 ──
+  - name: S23_s20_equity8_50k
+    strategy: S23_s20_equity8
+    capital: 50000
+    enabled: true
+  - name: S23_s20_equity8_100k
+    strategy: S23_s20_equity8
+    capital: 100000
+    enabled: true
+
+  # ── S29_s23_sensex ──
+  - name: S29_s23_sensex_50k
+    strategy: S29_s23_sensex
+    capital: 50000
+    enabled: true
+  - name: S29_s23_sensex_100k
+    strategy: S29_s23_sensex
+    capital: 100000
+    enabled: true
+
+  # ── S31_s24_persist ──
+  - name: S31_s24_persist_50k
+    strategy: S31_s24_persist
+    capital: 50000
+    enabled: true
+  - name: S31_s24_persist_100k
+    strategy: S31_s24_persist
     capital: 100000
     enabled: true
