@@ -59,7 +59,8 @@ async def check_db_round_trip(r: Result) -> None:
 
 async def check_schema(r: Result) -> None:
     print("Schema")
-    expected = {"candles", "portfolios", "positions", "trades", "equity_snapshots", "runs"}
+    expected = {"candles", "portfolios", "positions", "trades", "equity_snapshots", "runs",
+                "instruments", "universe_symbols", "portfolio_overrides", "backfill_queue", "app_meta"}
     rows = await fetch(
         "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
     )
@@ -108,12 +109,12 @@ def check_strategies(r: Result) -> None:
         r.fail("registry import failed", str(exc))
 
 
-def check_universe(r: Result) -> None:
-    print("Universe config")
+async def check_universe(r: Result) -> None:
+    print("Universe (DB-first)")
     try:
-        eq, idx = load_universe()
+        eq, idx = await load_universe()
         if not eq:
-            r.fail("universe.yaml has at least one equity", "symbols list is empty")
+            r.fail("universe has at least one equity", "no equities in universe_symbols")
         else:
             r.ok(f"loaded {len(eq)} equities, {len(idx)} indices")
         seen_tokens = set()
@@ -125,6 +126,20 @@ def check_universe(r: Result) -> None:
         r.ok("all tokens unique")
     except Exception as exc:  # noqa: BLE001
         r.fail("universe load failed", str(exc))
+
+
+async def check_instruments(r: Result) -> None:
+    print("Instrument master")
+    try:
+        row = await fetchrow("SELECT count(*) AS n FROM instruments")
+        n = int(row["n"]) if row else 0
+        if n == 0:
+            r.warn("instruments table empty",
+                   "run `python -m tools.refresh_instruments` once or click Refresh on /symbols")
+        else:
+            r.ok(f"{n:,} instruments cached")
+    except Exception as exc:  # noqa: BLE001
+        r.fail("instruments query failed", str(exc))
 
 
 async def check_portfolios_synced(r: Result) -> None:
@@ -191,16 +206,17 @@ async def _run(skip_angel: bool) -> int:
 
     # synchronous (no DB) checks first
     check_strategies(r)
-    check_universe(r)
     if not skip_angel:
         check_angel_login(r)
 
-    # async checks
+    # async checks (need DB)
     try:
         await get_pool()
         await check_db_round_trip(r)
         await check_schema(r)
         await check_timescale(r)
+        await check_universe(r)
+        await check_instruments(r)
         await check_portfolios_synced(r)
         await check_runner_heartbeats(r)
         await check_candles_present(r)

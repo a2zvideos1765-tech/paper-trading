@@ -18,7 +18,7 @@ from src.core.angel import AngelClient
 from src.core.db import close_pool, conn, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import IST, now_ist
-from src.core.universe import all_specs, load_universe
+from src.core.universe import load_universe
 
 
 log = setup_logging("backfill")
@@ -100,7 +100,7 @@ async def main() -> None:
         client = AngelClient.login()
         log.info("angel login ok")
 
-        equities, indices = load_universe()
+        equities, indices = await load_universe()
         total = 0
 
         for spec in equities:

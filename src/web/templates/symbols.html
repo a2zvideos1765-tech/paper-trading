@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% block title %}Symbols · Paper Trading{% endblock %}
+
+{% block content %}
+<header class="mb-4 flex items-start justify-between gap-3 flex-wrap">
+  <div>
+    <h1 class="text-xl font-semibold text-default">Symbols</h1>
+    <p class="text-xs text-muted mt-1">
+      Watch list shared across all strategies. Edits take effect within ~60s — no restart needed.
+    </p>
+  </div>
+  <div class="text-right text-xs text-muted">
+    <div>Instrument master: <span class="font-mono text-default">{{ "{:,}".format(instr_count) }}</span> rows</div>
+    {% if instr_meta_updated %}
+      <div>Last refreshed: <span class="font-mono text-default">{{ instr_meta_updated.strftime("%Y-%m-%d %H:%M") }}</span></div>
+    {% else %}
+      <div class="text-down">Never refreshed — run "Refresh now" once.</div>
+    {% endif %}
+    <button id="refresh-btn" class="btn-ghost mt-1 text-xs">Refresh now</button>
+    <span id="refresh-state" class="ml-2 text-muted"></span>
+  </div>
+</header>
+
+<!-- Add symbol -->
+<section class="card-2 p-4 mb-4">
+  <div class="text-xs text-muted uppercase mb-2">Add symbol</div>
+  <div class="relative">
+    <input id="search-input" type="search" autocomplete="off"
+           placeholder="Type at least 2 characters (e.g. RELIANCE, TCS, INFY) — searches symbol or company name"
+           class="input w-full text-sm font-mono">
+    <div id="search-dropdown"
+         class="hidden absolute z-30 left-0 right-0 mt-1 card shadow-lg max-h-80 overflow-y-auto"></div>
+  </div>
+  <div class="mt-3 flex items-center gap-3 text-xs text-default flex-wrap">
+    <label class="flex items-center gap-1.5">
+      <input id="kind-equity" type="radio" name="kind" value="equity" checked>
+      <span>Equity (5m bars)</span>
+    </label>
+    <label class="flex items-center gap-1.5">
+      <input id="kind-index" type="radio" name="kind" value="index">
+      <span>Index (1d bars)</span>
+    </label>
+    <span class="text-muted">·</span>
+    <label class="flex items-center gap-1.5">
+      <input id="backfill-cb" type="checkbox" checked>
+      <span>Backfill 200 days (queued — runs overnight)</span>
+    </label>
+  </div>
+</section>
+
+<!-- Universe -->
+<section class="card-2 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default text-sm font-semibold text-default">
+    Watch list
+    <span class="text-muted font-normal text-xs ml-2">{{ universe|length }} symbol(s)</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-muted uppercase">
+        <tr class="border-b border-default">
+          <th class="text-left px-4 py-2">Symbol</th>
+          <th class="text-left px-4 py-2">Name</th>
+          <th class="text-left px-4 py-2">Exch</th>
+          <th class="text-left px-4 py-2">Kind</th>
+          <th class="text-left px-4 py-2 hidden md:table-cell">Token</th>
+          <th class="text-left px-4 py-2 hidden md:table-cell">Added</th>
+          <th class="text-right px-4 py-2"></th>
+        </tr>
+      </thead>
+      <tbody id="universe-tbody">
+      {% for u in universe %}
+        <tr class="border-b border-default" data-row="{{ u.symbol }}|{{ u.exchange }}">
+          <td class="px-4 py-2 font-medium text-default">{{ u.symbol }}</td>
+          <td class="px-4 py-2 text-default">{{ u.instrument_name or "—" }}</td>
+          <td class="px-4 py-2 text-muted font-mono text-xs">{{ u.exchange }}</td>
+          <td class="px-4 py-2 text-xs">
+            <span class="pill {% if u.kind == 'index' %}pill-accent{% else %}pill-up{% endif %}">{{ u.kind }}</span>
+          </td>
+          <td class="px-4 py-2 text-muted font-mono text-xs hidden md:table-cell">{{ u.token }}</td>
+          <td class="px-4 py-2 text-muted text-xs hidden md:table-cell">
+            {{ u.added_at.strftime("%Y-%m-%d") if u.added_at else "" }}
+          </td>
+          <td class="px-4 py-2 text-right">
+            <button class="remove-btn text-down/70 hover:text-down text-sm"
+                    data-symbol="{{ u.symbol }}" data-exchange="{{ u.exchange }}"
+                    title="Remove from watch list">✕</button>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="px-4 py-6 text-center text-muted text-sm">
+          No symbols yet. Search above to add one.
+        </td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Backfill queue status -->
+<section class="card-2 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default text-sm font-semibold flex items-center justify-between text-default">
+    <span>Backfill queue</span>
+    <span class="text-xs text-muted font-normal">runs at 18:00 IST nightly · paced for Angel rate limits</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-muted uppercase">
+        <tr class="border-b border-default">
+          <th class="text-left px-4 py-2">Symbol</th>
+          <th class="text-left px-4 py-2">Interval</th>
+          <th class="text-left px-4 py-2">State</th>
+          <th class="text-left px-4 py-2 hidden md:table-cell">Enqueued</th>
+          <th class="text-left px-4 py-2 hidden md:table-cell">Finished</th>
+          <th class="text-left px-4 py-2">Notes</th>
+        </tr>
+      </thead>
+      <tbody id="backfill-tbody">
+      {% for b in backfill_recent %}
+        <tr class="border-b border-default">
+          <td class="px-4 py-2 font-medium text-default">{{ b.symbol }} <span class="text-muted text-xs">{{ b.exchange }}</span></td>
+          <td class="px-4 py-2 font-mono text-xs text-default">{{ b.interval }}</td>
+          <td class="px-4 py-2">
+            {% if b.state == 'done' %}
+              <span class="pill pill-up">done</span>
+            {% elif b.state == 'error' %}
+              <span class="pill pill-down">error</span>
+            {% elif b.state == 'running' %}
+              <span class="pill pill-accent">running</span>
+            {% else %}
+              <span class="pill pill-muted">pending</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs text-muted hidden md:table-cell font-mono">
+            {{ b.enqueued_at.strftime("%Y-%m-%d %H:%M") if b.enqueued_at else "" }}
+          </td>
+          <td class="px-4 py-2 text-xs text-muted hidden md:table-cell font-mono">
+            {{ b.finished_at.strftime("%Y-%m-%d %H:%M") if b.finished_at else "" }}
+          </td>
+          <td class="px-4 py-2 text-xs text-muted">{{ b.error or "" }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="px-4 py-6 text-center text-muted text-sm">No queued backfills.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const input = $("search-input");
+  const dropdown = $("search-dropdown");
+  const refreshBtn = $("refresh-btn");
+  const refreshState = $("refresh-state");
+
+  let lastQ = "";
+  let timer;
+
+  function selectedKind() {
+    return document.querySelector('input[name="kind"]:checked').value;
+  }
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    })[c]);
+  }
+
+  async function search(q) {
+    if (q.length < 2) { dropdown.classList.add("hidden"); return; }
+    const r = await fetch(`/api/symbols/search?q=${encodeURIComponent(q)}&limit=25`);
+    if (!r.ok) return;
+    const rows = await r.json();
+    if (!rows.length) {
+      dropdown.innerHTML = `<div class="px-3 py-2 text-muted text-sm">No matches.</div>`;
+      dropdown.classList.remove("hidden");
+      return;
+    }
+    dropdown.innerHTML = rows.map(r => `
+      <div class="result-row px-3 py-2 cursor-pointer flex items-center justify-between gap-2 hover:bg-accent-soft border-b border-soft last:border-0"
+           data-token="${escapeHtml(r.token)}">
+        <div class="min-w-0">
+          <div class="font-mono text-sm text-default">${escapeHtml(r.symbol)}</div>
+          <div class="text-xs text-muted truncate">${escapeHtml(r.name || "")}</div>
+        </div>
+        <div class="text-right text-xs text-muted shrink-0">
+          <div>${escapeHtml(r.exchange)}</div>
+          <div class="font-mono">${escapeHtml(r.instrument_type)}</div>
+        </div>
+      </div>`).join("");
+    dropdown.classList.remove("hidden");
+    dropdown.querySelectorAll(".result-row").forEach(el => {
+      el.addEventListener("click", () => addSymbol(el.dataset.token));
+    });
+  }
+
+  input.addEventListener("input", () => {
+    const q = input.value.trim();
+    if (q === lastQ) return;
+    lastQ = q;
+    clearTimeout(timer);
+    timer = setTimeout(() => search(q), 200);
+  });
+  document.addEventListener("click", (e) => {
+    if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.classList.add("hidden");
+    }
+  });
+
+  async function addSymbol(token) {
+    const body = { token, backfill: $("backfill-cb").checked, kind: selectedKind() };
+    const r = await fetch("/api/symbols", {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { alert(`Add failed: ${await r.text()}`); return; }
+    location.reload();
+  }
+
+  document.querySelectorAll(".remove-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(`Remove ${btn.dataset.symbol} from the watch list? History stays in the DB.`)) return;
+      const r = await fetch(`/api/symbols/${encodeURIComponent(btn.dataset.symbol)}/${encodeURIComponent(btn.dataset.exchange)}`, { method: "DELETE" });
+      if (!r.ok) { alert("Remove failed."); return; }
+      btn.closest("tr").remove();
+    });
+  });
+
+  refreshBtn.addEventListener("click", async () => {
+    refreshState.textContent = "starting…";
+    refreshBtn.disabled = true;
+    await fetch("/api/symbols/refresh", { method: "POST" });
+    pollRefresh();
+  });
+
+  async function pollRefresh() {
+    const r = await fetch("/api/symbols/refresh/status");
+    if (!r.ok) return;
+    const s = await r.json();
+    if (s.state === "running") {
+      refreshState.textContent = "downloading…";
+      setTimeout(pollRefresh, 3000);
+    } else if (s.state === "error") {
+      refreshState.textContent = `error: ${s.error || "unknown"}`;
+      refreshBtn.disabled = false;
+    } else {
+      refreshState.textContent = `done — ${(s.count || 0).toLocaleString()} rows`;
+      setTimeout(() => location.reload(), 1500);
+    }
+  }
+})();
+</script>
+{% endblock %}

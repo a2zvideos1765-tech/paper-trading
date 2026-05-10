@@ -32,7 +32,7 @@ from src.core.config import settings
 from src.core.db import close_pool, conn, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import IST, is_market_open, now_ist, seconds_until_market_open
-from src.core.universe import all_specs
+from src.core.universe import load_universe
 
 
 log = setup_logging("poller")
@@ -61,8 +61,12 @@ async def upsert_bars(symbol: str, df) -> int:
 
 
 async def poll_once(client: AngelClient) -> None:
-    """One pass over the universe — fetch the trailing few 5-min bars and upsert."""
-    specs = all_specs()
+    """One pass over the universe — fetch the trailing few 5-min bars and upsert.
+
+    Universe is re-read every cycle so symbol additions/removals from /symbols
+    take effect within ~60s with no restart needed."""
+    equities, _indices = await load_universe()
+    specs = equities  # poller only fetches equities at 5m; indices are 1d via backfill
     now = now_ist()
     # 15-minute trailing window: covers the in-progress 5-min bar plus the two
     # prior bars, so a single missed cycle self-heals on the next poll. UPSERTs

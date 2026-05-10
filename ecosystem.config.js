@@ -62,5 +62,33 @@ module.exports = {
       error_file: "logs/pm2/backfill.err.log",
       merge_logs: true,
     },
+    {
+      // Drains backfill_queue (rows enqueued when users add symbols via /symbols).
+      // Runs every day at 18:00 IST after the regular nightly backfill, paced at
+      // ~1 fetch/sec to stay below Angel's rate limit. Stops at 06:00 IST.
+      name: "paperaglo-backfill-queue",
+      script: "python",
+      args: "-m src.runners.backfill_queue",
+      cwd: __dirname,
+      autorestart: false,
+      cron_restart: "0 18 * * *",
+      out_file: "logs/pm2/backfill_queue.out.log",
+      error_file: "logs/pm2/backfill_queue.err.log",
+      merge_logs: true,
+    },
+    {
+      // Refreshes the Angel One instrument master (~80k rows) once a week.
+      // The list barely changes between corporate actions; weekly is plenty.
+      // Manual refreshes are also possible via the "Refresh now" button on /symbols.
+      name: "paperaglo-instruments",
+      script: "python",
+      args: "-m tools.refresh_instruments",
+      cwd: __dirname,
+      autorestart: false,
+      cron_restart: "0 3 * * 0",
+      out_file: "logs/pm2/instruments.out.log",
+      error_file: "logs/pm2/instruments.err.log",
+      merge_logs: true,
+    },
   ],
 };

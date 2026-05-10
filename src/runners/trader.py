@@ -25,7 +25,7 @@ from src.core.config import REPO_ROOT, settings
 from src.core.db import close_pool, conn, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import is_market_open, now_ist, seconds_until_market_open
-from src.core.universe import all_specs
+from src.core.universe import load_universe
 from src.engine.replay import (
     DEFAULT_LOOKBACK_DAYS,
     PortfolioRow,
@@ -98,10 +98,9 @@ async def tick() -> None:
 
     # Load all candles once, share across portfolios. We use 5-min bars for the
     # equity universe (matches the engine's training data) and 1-day for indices.
-    symbols = [s.symbol for s in all_specs() if s.exchange == "NSE"]
-    # Filter to equities — drop indices from the equity candle window.
-    from src.core.universe import load_universe
-    equities, indices = load_universe()
+    # Universe is re-read every tick so add/remove from /symbols takes effect
+    # within ~60s with no restart needed.
+    equities, indices = await load_universe()
     equity_symbols = [s.symbol for s in equities]
 
     until = now_ist().replace(second=0, microsecond=0)

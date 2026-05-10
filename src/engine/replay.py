@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta
 import asyncpg
 import pandas as pd
 
-from src.core.db import conn
+from src.core.db import conn, fetchrow
 from src.core.time import IST
 from src.engine.v2_engine import (
     ChargeConfigV2,
@@ -32,6 +32,7 @@ from src.engine.v2_engine import (
     prime_regime_index,
     run_backtest_v2,
 )
+from src.strategies.validation import coerce_and_apply
 
 
 log = logging.getLogger("engine.replay")
@@ -300,6 +301,17 @@ def _holdings_from_open_positions(open_positions: list[dict], all_trades: list[d
 
 # ---------- Top-level: one replay for one portfolio ----------
 
+async def _load_overrides(portfolio_id: int) -> dict:
+    row = await fetchrow(
+        "SELECT overrides FROM portfolio_overrides WHERE portfolio_id = $1",
+        portfolio_id,
+    )
+    if not row:
+        return {}
+    val = row["overrides"]
+    return val if isinstance(val, dict) else {}
+
+
 async def replay_one_portfolio(
     portfolio: PortfolioRow,
     strategy: StrategyV2,
@@ -316,8 +328,21 @@ async def replay_one_portfolio(
     if not sensex_close.empty:
         prime_regime_index("SENSEX", sensex_close)
 
-    # Bind the portfolio's capital to the strategy.
-    bound = replace(strategy, starting_cash=float(portfolio.capital))
+    # Apply per-portfolio strategy overrides (set by the user from the dashboard).
+    # If validation fails, skip this portfolio's tick — never silently corrupt state.
+    overrides = await _load_overrides(portfolio.id)
+    overridden, errs = coerce_and_apply(strategy, overrides)
+    if errs:
+        log.warning(
+            "skipping portfolio: invalid overrides",
+            extra={"portfolio_id": portfolio.id, "portfolio_name": portfolio.name, "errors": errs},
+        )
+        return {"trades": [], "open_positions": [], "equity_curve": [],
+                "summary": {"final_equity": float(portfolio.capital)},
+                "validation_errors": errs}
+
+    # Bind the portfolio's capital to the (possibly overridden) strategy.
+    bound = replace(overridden, starting_cash=float(portfolio.capital))
 
     result = run_backtest_v2(candles, bound, charges)
 

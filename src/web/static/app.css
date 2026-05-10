@@ -1,6 +1,41 @@
-/* Tiny supplementary stylesheet — Tailwind covers most things via the CDN. */
+/* ==== Theme tokens (Kite-style: red accent, switchable light/dark) ==== */
+:root {
+  --bg:          #f6f8fb;
+  --surface:     #ffffff;
+  --surface-2:   #fbfcfe;
+  --border:      rgba(15, 23, 42, 0.10);
+  --border-soft: rgba(15, 23, 42, 0.05);
+  --text:        #1f2937;
+  --text-muted:  #5b6b7a;
+  --accent:      #ff5722;             /* Kite signature red-orange */
+  --accent-soft: rgba(255, 87, 34, 0.10);
+  --accent-ink:  #ffffff;             /* text colour on accent backgrounds */
+  --up:          #1ba94c;
+  --down:        #e94b35;
+}
 
+[data-theme="dark"] {
+  --bg:          #0f1117;
+  --surface:     #171a23;
+  --surface-2:   #1e2230;
+  --border:      rgba(255, 255, 255, 0.08);
+  --border-soft: rgba(255, 255, 255, 0.04);
+  --text:        #e6e6e6;
+  --text-muted:  #94a3b8;
+  --accent:      #ff5722;
+  --accent-soft: rgba(255, 87, 34, 0.16);
+  --accent-ink:  #ffffff;
+  --up:          #1ec469;
+  --down:        #ef5350;
+}
+
+/* ==== Base styling on top of Tailwind ==== */
 html { -webkit-text-size-adjust: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
 
 /* iOS safe-area for the bottom nav */
 @supports (padding: env(safe-area-inset-bottom)) {
@@ -14,4 +49,122 @@ html { -webkit-text-size-adjust: 100%; }
 
 /* Hide scrollbar on horizontal table scroll wrappers but keep scrolling */
 .overflow-x-auto::-webkit-scrollbar { height: 6px; }
-.overflow-x-auto::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 6px; }
+.overflow-x-auto::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+/* ==== Token-driven helpers (hand-rolled because Tailwind Play CDN can't use arbitrary CSS vars in every utility) ==== */
+.bg-bg        { background-color: var(--bg); }
+.bg-surface   { background-color: var(--surface); }
+.bg-surface-2 { background-color: var(--surface-2); }
+.bg-accent    { background-color: var(--accent); }
+.bg-accent-soft { background-color: var(--accent-soft); }
+.bg-up-soft   { background-color: color-mix(in srgb, var(--up) 12%, transparent); }
+.bg-down-soft { background-color: color-mix(in srgb, var(--down) 12%, transparent); }
+
+.text-default { color: var(--text); }
+.text-muted   { color: var(--text-muted); }
+.text-accent  { color: var(--accent); }
+.text-accent-ink { color: var(--accent-ink); }
+.text-up      { color: var(--up); }
+.text-down    { color: var(--down); }
+
+.border-default { border-color: var(--border); }
+.border-soft    { border-color: var(--border-soft); }
+.border-accent  { border-color: var(--accent); }
+
+/* Numeric tabular figures everywhere we use font-mono */
+.tabular { font-variant-numeric: tabular-nums; }
+.font-mono { font-variant-numeric: tabular-nums; }
+
+/* Active nav link underline (Kite signature) */
+.nav-link {
+  position: relative;
+  color: var(--text-muted);
+  padding: 0.25rem 0;
+}
+.nav-link:hover { color: var(--text); }
+.nav-link.active {
+  color: var(--text);
+}
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -8px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* Kite-ish "card" look used everywhere */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+.card-2 {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+.card-hover:hover { border-color: var(--accent); }
+
+/* Accent button */
+.btn-accent {
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.5rem;
+  font-weight: 500;
+  transition: filter 0.15s;
+}
+.btn-accent:hover  { filter: brightness(0.95); }
+.btn-accent:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-ghost {
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  transition: border-color 0.15s;
+}
+.btn-ghost:hover { border-color: var(--accent); }
+
+/* Inputs */
+.input {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.7rem;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Theme toggle button */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem; height: 2rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  transition: color 0.15s, border-color 0.15s;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
+.theme-toggle .sun { display: none; }
+.theme-toggle .moon { display: inline; }
+[data-theme="dark"] .theme-toggle .sun  { display: inline; }
+[data-theme="dark"] .theme-toggle .moon { display: none; }
+
+/* Pills */
+.pill { display: inline-flex; align-items: center; gap: 0.25rem;
+        padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.7rem; }
+.pill-up      { background: color-mix(in srgb, var(--up) 12%, transparent);   color: var(--up); }
+.pill-down    { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); }
+.pill-accent  { background: var(--accent-soft); color: var(--accent); }
+.pill-muted   { background: var(--border-soft); color: var(--text-muted); }

@@ -215,6 +215,9 @@ psql -U paper -d paper_trading -h 127.0.0.1 -f sql/001_schema.sql
 # Convert the candles and equity_snapshots tables into TimescaleDB hypertables
 # (makes time-range queries much faster)
 psql -U paper -d paper_trading -h 127.0.0.1 -f sql/002_timescale.sql
+
+# Phase 2: editable universe (Angel instrument master, watch list, overrides, backfill queue)
+psql -U paper -d paper_trading -h 127.0.0.1 -f sql/003_universe.sql
 ```
 
 > Both commands will prompt for the `paper` user's password unless you set
@@ -429,6 +432,37 @@ pm2 reload ecosystem.config.js
 
 ---
 
+## Managing symbols from the dashboard
+
+The watch list lives in the `universe_symbols` table and is editable from the
+`/symbols` page. The poller and trader re-read it every cycle, so additions and
+removals take effect within ~60 seconds without restarting any service.
+
+### First time
+
+1. Click **Refresh now** on `/symbols` to download Angel One's instrument master
+   (~80,000 rows, ~30 seconds). After this, the search bar can find any
+   listed symbol on NSE/BSE/NFO.
+2. Search for a symbol (e.g. "RELIANCE"), pick **Equity** or **Index**, and
+   choose whether to queue a 200-day historical backfill. Click the row to add.
+3. To remove a symbol click the × — its history stays in the DB but it stops
+   getting live polled.
+
+### Backfill queue
+
+When "Backfill 200 days" is checked on add, a row is enqueued in
+`backfill_queue` and the **paperaglo-backfill-queue** PM2 job drains it
+overnight (starts at 18:00 IST, paced at ~1 fetch/sec, stops by 06:00 IST).
+Status is visible at the bottom of `/symbols`.
+
+### Weekly instrument refresh
+
+The **paperaglo-instruments** PM2 cron runs every Sunday at 03:00 IST to keep
+the searchable instrument master current. New listings appear automatically;
+the dashboard's "Refresh now" button is for the rare same-day case.
+
+---
+
 ## Default portfolios
 
 The 5 strategies in `config/portfolios.yaml` (each at ₹50k and ₹100k = 10
@@ -437,6 +471,40 @@ portfolios) are: **S6_tiered_exit**, **S14_concentrated**, **S23_s20_equity8**,
 by editing the YAML and `pm2 restart paperaglo-trader`.
 
 ---
+
+## Light / dark theme
+
+Click the sun/moon icon in the header to flip themes. The choice persists
+in `localStorage` so the dashboard remembers it across sessions, and the
+default tracks your OS preference (`prefers-color-scheme`). The equity
+curve chart rebuilds itself on theme change so colours stay in sync.
+
+## Tweaking strategy parameters from the dashboard
+
+Each portfolio's detail page (`/portfolio/{id}`) has a collapsible
+**Strategy parameters** section. Open it to see every `StrategyV2` field
+with its strategy-file default, the currently-effective value, and an
+input matched to its type (number, checkbox, dropdown, repeating row).
+
+- Edits are scoped **per portfolio** — `S6_tiered_exit_50k` and
+  `S6_tiered_exit_100k` can diverge.
+- Click **Save** to persist as JSONB in `portfolio_overrides`.
+  The trader picks up changes on its next replay (within ~60s).
+- **Reset** clears that field back to the strategy file's default.
+  **Reset all to defaults** wipes every override for the portfolio.
+- The server runs **type coercion** (so a `"35"` string becomes
+  `35.0`) and **semantic validation** (e.g. `entry_mode='trigger'` is
+  rejected unless `trigger_window` is a valid `09:15–15:30 IST`
+  pair). A failing edit returns the per-field error and the
+  override is *not* saved.
+- If the trader ever encounters invalid overrides at tick time
+  (shouldn't happen because the API validates first, but defensively
+  it does) it skips that portfolio's tick and records the error in
+  the `runs.detail` heartbeat — no silent corruption.
+
+The strategy file's defaults remain the ultimate source of truth.
+Wiping `portfolio_overrides` always brings every portfolio back to
+factory settings.
 
 ## Adding a new strategy
 

@@ -18,7 +18,7 @@ from src.core.config import REPO_ROOT, settings
 from src.core.db import close_pool, get_pool
 from src.core.logging import setup_logging
 from src.web.auth import is_authenticated
-from src.web.routes import api, dashboard, diagnose, health, login, portfolios, trades
+from src.web.routes import api, dashboard, diagnose, health, login, portfolios, symbols, trades
 
 
 log = setup_logging("web")
@@ -74,4 +74,5 @@ app.include_router(dashboard.router)
 app.include_router(portfolios.router)
 app.include_router(trades.router)
 app.include_router(diagnose.router)
+app.include_router(symbols.router)
 app.include_router(api.router)

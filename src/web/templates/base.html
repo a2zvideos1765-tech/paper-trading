@@ -3,21 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#1a1d29">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
   <title>{% block title %}Paper Trading{% endblock %}</title>
 
-  <!-- Tailwind via Play CDN; zero-build, perfectly fine for a personal dashboard -->
+  <!-- Theme bootstrap — runs synchronously to avoid a flash before painting. -->
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/theme.js"></script>
+
+  <!-- Tailwind via Play CDN; zero-build, perfectly fine for a personal dashboard.
+       darkMode is wired to the data-theme attribute set by theme.js. -->
   <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
   <script>
     tailwind.config = {
+      darkMode: ['class', '[data-theme="dark"]'],
       theme: {
         extend: {
           colors: {
-            // Kite-ish palette
-            ink: { DEFAULT: '#1a1d29', soft: '#23283a' },
-            up:   '#10b981',
-            down: '#ef4444',
-            accent: '#3b82f6',
+            // Kite-style tokens, all driven by CSS variables in app.css
+            surface:    'var(--surface)',
+            surface2:   'var(--surface-2)',
+            accent:     'var(--accent)',
+            up:         'var(--up)',
+            down:       'var(--down)',
+            ink:        'var(--bg)',         // legacy alias for old templates
+            'ink-soft': 'var(--surface-2)',  // legacy alias
           },
           fontFamily: {
             sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
@@ -34,23 +44,41 @@
   <!-- TradingView Lightweight Charts for the equity curve -->
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 
-  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/charts.js" defer></script>
 </head>
-<body class="bg-ink text-slate-100 font-sans antialiased min-h-screen">
-  <header class="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/5">
-    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2 font-semibold">
-        <span class="inline-block w-2 h-2 rounded-full bg-accent"></span>
+<body class="font-sans antialiased min-h-screen">
+  <header class="sticky top-0 z-20 backdrop-blur"
+          style="background: color-mix(in srgb, var(--bg) 88%, transparent); border-bottom: 1px solid var(--border);">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+      <a href="/" class="flex items-center gap-2 font-semibold shrink-0">
+        <span class="inline-block w-2.5 h-2.5 rounded-full" style="background: var(--accent);"></span>
         <span>Paper Trading</span>
       </a>
-      <nav class="hidden md:flex items-center gap-5 text-sm">
-        <a href="/" class="hover:text-white text-slate-300">Dashboard</a>
-        <a href="/trades" class="hover:text-white text-slate-300">Trades</a>
-        <a href="/health" class="hover:text-white text-slate-300">Health</a>
-        <form action="/logout" method="post" class="inline">
-          <button class="text-slate-400 hover:text-white">Logout</button>
-        </form>
+      <nav class="hidden md:flex items-center gap-6 text-sm">
+        {% set p = request.url.path %}
+        <a href="/"         class="nav-link {% if p == '/' %}active{% endif %}">Dashboard</a>
+        <a href="/symbols"  class="nav-link {% if p.startswith('/symbols') %}active{% endif %}">Symbols</a>
+        <a href="/trades"   class="nav-link {% if p.startswith('/trades') %}active{% endif %}">Trades</a>
+        <a href="/health"   class="nav-link {% if p.startswith('/health') %}active{% endif %}">Health</a>
       </nav>
+      <div class="flex items-center gap-2 shrink-0">
+        <button type="button" class="theme-toggle" onclick="window.toggleTheme()" aria-label="Toggle theme">
+          <!-- moon (light mode showing this) -->
+          <svg class="moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+          <!-- sun (dark mode showing this) -->
+          <svg class="sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+        </button>
+        <form action="/logout" method="post" class="inline">
+          <button class="text-sm text-muted hover:text-default px-2">Logout</button>
+        </form>
+      </div>
     </div>
   </header>
 
@@ -59,11 +87,14 @@
   </main>
 
   <!-- Mobile bottom nav -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-ink border-t border-white/5 z-20">
-    <div class="grid grid-cols-3 text-xs">
-      <a href="/" class="py-3 text-center text-slate-300 hover:text-white">Home</a>
-      <a href="/trades" class="py-3 text-center text-slate-300 hover:text-white">Trades</a>
-      <a href="/health" class="py-3 text-center text-slate-300 hover:text-white">Health</a>
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 z-20"
+       style="background: var(--surface); border-top: 1px solid var(--border);">
+    <div class="grid grid-cols-4 text-xs">
+      {% set p = request.url.path %}
+      <a href="/"        class="py-3 text-center {% if p == '/' %}text-accent{% else %}text-muted{% endif %}">Home</a>
+      <a href="/symbols" class="py-3 text-center {% if p.startswith('/symbols') %}text-accent{% else %}text-muted{% endif %}">Symbols</a>
+      <a href="/trades"  class="py-3 text-center {% if p.startswith('/trades') %}text-accent{% else %}text-muted{% endif %}">Trades</a>
+      <a href="/health"  class="py-3 text-center {% if p.startswith('/health') %}text-accent{% else %}text-muted{% endif %}">Health</a>
     </div>
   </nav>
 </body>

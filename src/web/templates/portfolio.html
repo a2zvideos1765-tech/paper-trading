@@ -6,59 +6,70 @@
 {%- endmacro %}
 
 {% macro pct(value) -%}
-  <span class="{% if value > 0 %}text-up{% elif value < 0 %}text-down{% else %}text-slate-400{% endif %}">
+  <span class="{% if value > 0 %}text-up{% elif value < 0 %}text-down{% else %}text-muted{% endif %}">
     {{ "{:+.2f}".format(value) }}%
   </span>
 {%- endmacro %}
 
 {% block content %}
-<a href="/" class="text-xs text-slate-400 hover:text-white">&larr; All portfolios</a>
+<a href="/" class="text-xs text-muted hover:text-default">&larr; All portfolios</a>
 
 <header class="mt-2 mb-4">
-  <h1 class="text-xl font-semibold">{{ portfolio.name }}</h1>
-  <div class="text-xs text-slate-400 mt-1">
-    Strategy <span class="font-mono text-slate-300">{{ portfolio.strategy_id }}</span>
+  <h1 class="text-xl font-semibold text-default">{{ portfolio.name }}</h1>
+  <div class="text-xs text-muted mt-1">
+    Strategy <span class="font-mono text-default">{{ portfolio.strategy_id }}</span>
     · Capital {{ money(portfolio.capital, 0) }}
-    {% if not portfolio.enabled %}<span class="ml-2 px-1.5 py-0.5 bg-down/10 text-down rounded">disabled</span>{% endif %}
+    {% if not portfolio.enabled %}<span class="ml-2 pill pill-down">disabled</span>{% endif %}
   </div>
 </header>
 
 <!-- Top stats -->
-<section class="bg-ink-soft rounded-xl p-4 border border-white/5 mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm"
+<section class="card-2 p-4 mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm"
          hx-get="/api/portfolio/{{ portfolio.id }}/state"
          hx-trigger="every 15s"
          hx-swap="none">
   <div>
-    <div class="text-xs text-slate-400 uppercase">Equity</div>
-    <div class="font-mono font-semibold mt-0.5">{{ money(eq.equity) }}</div>
+    <div class="text-xs text-muted uppercase">Equity</div>
+    <div class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.equity) }}</div>
   </div>
   <div>
-    <div class="text-xs text-slate-400 uppercase">Cash</div>
-    <div class="font-mono font-semibold mt-0.5">{{ money(eq.cash) }}</div>
+    <div class="text-xs text-muted uppercase">Cash</div>
+    <div class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.cash) }}</div>
   </div>
   <div>
-    <div class="text-xs text-slate-400 uppercase">Holdings</div>
-    <div class="font-mono font-semibold mt-0.5">{{ money(eq.holdings_value) }}</div>
+    <div class="text-xs text-muted uppercase">Holdings</div>
+    <div class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.holdings_value) }}</div>
   </div>
   <div>
-    <div class="text-xs text-slate-400 uppercase">Open</div>
-    <div class="font-mono font-semibold mt-0.5">{{ eq.open_positions }}</div>
+    <div class="text-xs text-muted uppercase">Open</div>
+    <div class="font-mono font-semibold mt-0.5 text-default">{{ eq.open_positions }}</div>
   </div>
 </section>
 
 <!-- Equity chart -->
-<section class="bg-ink-soft rounded-xl p-4 border border-white/5 mb-4">
-  <div class="text-xs text-slate-400 uppercase mb-2">Equity curve</div>
+<section class="card-2 p-4 mb-4">
+  <div class="text-xs text-muted uppercase mb-2">Equity curve · vs NIFTY 50 / SENSEX</div>
   <div id="equity-chart" class="h-56 md:h-64"></div>
 </section>
 
+<!-- Strategy parameters -->
+<section class="card-2 mb-4 overflow-hidden">
+  <details id="params-details">
+    <summary class="px-4 py-3 border-b border-default text-sm font-semibold cursor-pointer flex items-center justify-between text-default">
+      <span>Strategy parameters</span>
+      <span id="params-status" class="text-xs text-muted font-normal"></span>
+    </summary>
+    <div id="params-body" class="p-4 text-sm text-muted">Loading…</div>
+  </details>
+</section>
+
 <!-- Holdings -->
-<section class="bg-ink-soft rounded-xl border border-white/5 mb-4 overflow-hidden">
-  <div class="px-4 py-3 border-b border-white/5 text-sm font-semibold">Holdings</div>
+<section class="card-2 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default text-sm font-semibold text-default">Holdings</div>
   <div class="overflow-x-auto">
     <table class="w-full text-sm">
-      <thead class="text-xs text-slate-400 uppercase">
-        <tr class="border-b border-white/5">
+      <thead class="text-xs text-muted uppercase">
+        <tr class="border-b border-default">
           <th class="text-left px-4 py-2">Symbol</th>
           <th class="text-right px-4 py-2">Qty</th>
           <th class="text-right px-4 py-2">Avg</th>
@@ -70,22 +81,22 @@
       </thead>
       <tbody>
       {% for h in holdings %}
-        <tr class="border-b border-white/5">
-          <td class="px-4 py-2 font-medium">{{ h.symbol }}</td>
-          <td class="px-4 py-2 text-right font-mono">{{ h.qty }}</td>
-          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(h.avg_price) }}</td>
-          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(h.last) }}</td>
-          <td class="px-4 py-2 text-right font-mono">{{ money(h.market_value) }}</td>
+        <tr class="border-b border-default">
+          <td class="px-4 py-2 font-medium text-default">{{ h.symbol }}</td>
+          <td class="px-4 py-2 text-right font-mono text-default">{{ h.qty }}</td>
+          <td class="px-4 py-2 text-right font-mono text-default">{{ "{:,.2f}".format(h.avg_price) }}</td>
+          <td class="px-4 py-2 text-right font-mono text-default">{{ "{:,.2f}".format(h.last) }}</td>
+          <td class="px-4 py-2 text-right font-mono text-default">{{ money(h.market_value) }}</td>
           <td class="px-4 py-2 text-right font-mono
-                     {% if h.pnl > 0 %}text-up{% elif h.pnl < 0 %}text-down{% endif %}">
+                     {% if h.pnl > 0 %}text-up{% elif h.pnl < 0 %}text-down{% else %}text-default{% endif %}">
             {{ "{:+,.0f}".format(h.pnl) }} ({{ pct(h.pnl_pct) }})
           </td>
-          <td class="px-4 py-2 text-right text-xs text-slate-400 hidden md:table-cell">
+          <td class="px-4 py-2 text-right text-xs text-muted hidden md:table-cell">
             {{ h.tiers_hit }}/{{ h.pyramid_adds_hit }}
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-sm">No open positions.</td></tr>
+        <tr><td colspan="7" class="px-4 py-6 text-center text-muted text-sm">No open positions.</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -93,15 +104,15 @@
 </section>
 
 <!-- Recent trades -->
-<section class="bg-ink-soft rounded-xl border border-white/5 mb-4 overflow-hidden">
-  <div class="px-4 py-3 border-b border-white/5 text-sm font-semibold flex items-center justify-between">
+<section class="card-2 mb-4 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default text-sm font-semibold flex items-center justify-between text-default">
     <span>Recent trades</span>
-    <a href="/trades" class="text-xs text-slate-400 hover:text-white">All trades →</a>
+    <a href="/trades" class="text-xs text-muted hover:text-default">All trades →</a>
   </div>
   <div class="overflow-x-auto">
     <table class="w-full text-sm">
-      <thead class="text-xs text-slate-400 uppercase">
-        <tr class="border-b border-white/5">
+      <thead class="text-xs text-muted uppercase">
+        <tr class="border-b border-default">
           <th class="text-left px-4 py-2">When</th>
           <th class="text-left px-4 py-2">Symbol</th>
           <th class="text-left px-4 py-2">Side</th>
@@ -112,16 +123,16 @@
       </thead>
       <tbody>
       {% for t in recent_trades %}
-        <tr class="border-b border-white/5">
-          <td class="px-4 py-2 font-mono text-xs">{{ t.ts.strftime("%Y-%m-%d %H:%M") }}</td>
-          <td class="px-4 py-2 font-medium">{{ t.symbol }}</td>
+        <tr class="border-b border-default">
+          <td class="px-4 py-2 font-mono text-xs text-default">{{ t.ts.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="px-4 py-2 font-medium text-default">{{ t.symbol }}</td>
           <td class="px-4 py-2 {% if t.side == 'BUY' %}text-up{% else %}text-down{% endif %}">{{ t.side }}</td>
-          <td class="px-4 py-2 text-right font-mono">{{ t.qty }}</td>
-          <td class="px-4 py-2 text-right font-mono">{{ "{:,.2f}".format(t.price) }}</td>
-          <td class="px-4 py-2 hidden md:table-cell text-xs text-slate-400">{{ t.reason }}</td>
+          <td class="px-4 py-2 text-right font-mono text-default">{{ t.qty }}</td>
+          <td class="px-4 py-2 text-right font-mono text-default">{{ "{:,.2f}".format(t.price) }}</td>
+          <td class="px-4 py-2 hidden md:table-cell text-xs text-muted">{{ t.reason }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500 text-sm">No trades yet.</td></tr>
+        <tr><td colspan="6" class="px-4 py-6 text-center text-muted text-sm">No trades yet.</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -129,23 +140,255 @@
 </section>
 
 <script>
-(async () => {
+window.addEventListener('DOMContentLoaded', async () => {
   const el = document.getElementById('equity-chart');
-  if (!el) return;
-  const res = await fetch("/api/portfolio/{{ portfolio.id }}/equity");
-  if (!res.ok) return;
-  const data = await res.json();
-  if (!data.length) { el.innerHTML = '<div class="text-slate-500 text-sm h-full flex items-center justify-center">No equity history yet.</div>'; return; }
-  const chart = LightweightCharts.createChart(el, {
-    layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
-    grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
-    timeScale: { timeVisible: true, secondsVisible: false },
-    rightPriceScale: { borderVisible: false },
+  if (!el || !window.PaperTradingCharts) return;
+  await window.PaperTradingCharts.mountEquityChart(el, {{ portfolio.id }});
+});
+</script>
+
+<script>
+// ==== Strategy parameters editor ====
+(() => {
+  const PORTFOLIO_ID = {{ portfolio.id }};
+  const body = document.getElementById("params-body");
+  const status = document.getElementById("params-status");
+  const details = document.getElementById("params-details");
+
+  let state = null;
+  let dirty = {};
+
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    })[c]);
+  }
+  function isEqual(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  function fieldValue(name) {
+    if (name in dirty) return dirty[name];
+    if (name in state.overrides) return state.overrides[name];
+    return state.defaults[name];
+  }
+  function isOverridden(name) { return !isEqual(fieldValue(name), state.defaults[name]); }
+  function set(name, value)   { dirty[name] = value; render(); }
+  function clear(name)        { delete dirty[name]; delete state.overrides[name]; render(); }
+
+  function renderInputNumber(name, kind) {
+    const v = fieldValue(name);
+    const step = kind.endsWith("int") ? "1" : "any";
+    return `<input type="number" step="${step}" data-fname="${name}"
+              value="${v === null || v === undefined ? "" : escapeHtml(v)}"
+              class="input w-32 text-right font-mono text-sm">`;
+  }
+  function renderBool(name) {
+    const v = fieldValue(name);
+    return `<label class="inline-flex items-center gap-1.5">
+      <input type="checkbox" data-fname="${name}" ${v ? "checked" : ""} class="rounded">
+      <span class="text-xs text-muted">${v ? "true" : "false"}</span>
+    </label>`;
+  }
+  function renderSelect(name, options) {
+    const v = fieldValue(name);
+    const opts = ["", ...options];
+    return `<select data-fname="${name}" class="input text-sm">
+      ${opts.map(o => `<option value="${escapeHtml(o)}" ${v === o || (v === null && o === "") ? "selected" : ""}>${o === "" ? "—" : escapeHtml(o)}</option>`).join("")}
+    </select>`;
+  }
+  function renderStr(name) {
+    const v = fieldValue(name);
+    return `<input type="text" data-fname="${name}"
+              value="${v === null || v === undefined ? "" : escapeHtml(v)}"
+              class="input w-32 font-mono text-sm">`;
+  }
+  function renderTupleStr2(name) {
+    const v = fieldValue(name) || ["", ""];
+    return `<div class="flex items-center gap-1">
+      <input type="text" data-fname="${name}" data-idx="0" value="${escapeHtml(v[0] || "")}"
+        class="input w-20 font-mono text-sm">
+      <span class="text-muted">→</span>
+      <input type="text" data-fname="${name}" data-idx="1" value="${escapeHtml(v[1] || "")}"
+        class="input w-20 font-mono text-sm">
+    </div>`;
+  }
+  function renderTuplePairList(name) {
+    const v = fieldValue(name) || [];
+    const rows = v.map((pair, i) => `
+      <div class="flex items-center gap-1 mb-1" data-pair-row="${i}">
+        <input type="number" step="any" data-fname="${name}" data-idx="${i}" data-col="0" value="${pair[0]}"
+          class="input w-24 text-right font-mono text-xs">
+        <span class="text-muted">,</span>
+        <input type="number" step="any" data-fname="${name}" data-idx="${i}" data-col="1" value="${pair[1]}"
+          class="input w-24 text-right font-mono text-xs">
+        <button data-pair-remove="${name}" data-idx="${i}" class="text-down/70 hover:text-down ml-1" title="Remove row">✕</button>
+      </div>`).join("");
+    return `<div class="space-y-1">
+      ${rows || '<div class="text-xs text-muted italic mb-1">No rows.</div>'}
+      <button data-pair-add="${name}" class="text-xs text-accent hover:underline">+ add row</button>
+    </div>`;
+  }
+
+  function renderField(name, meta) {
+    let widget;
+    const kind = meta.kind;
+    if (kind === "float" || kind === "int" || kind === "optional_float" || kind === "optional_int") {
+      widget = renderInputNumber(name, kind);
+    } else if (kind === "bool") {
+      widget = renderBool(name);
+    } else if ((kind === "str" || kind === "optional_str") && meta.options) {
+      widget = renderSelect(name, meta.options);
+    } else if (kind === "str" || kind === "optional_str") {
+      widget = renderStr(name);
+    } else if (kind === "tuple_str_2") {
+      widget = renderTupleStr2(name);
+    } else if (kind === "tuple_pair_list") {
+      widget = renderTuplePairList(name);
+    } else {
+      widget = `<span class="text-xs text-down">unknown kind ${kind}</span>`;
+    }
+    const overridden = isOverridden(name);
+    const err = state.errors && state.errors[name];
+    const pill = overridden
+      ? `<span class="ml-2 pill pill-accent">overridden</span>`
+      : `<span class="ml-2 pill pill-muted">default</span>`;
+    const reset = overridden
+      ? `<button data-clear="${name}" class="ml-2 text-[11px] text-muted hover:text-default">reset</button>`
+      : "";
+    return `
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-2 py-2 border-b border-default last:border-0">
+        <div class="md:col-span-1">
+          <div class="text-sm font-mono text-default">${name}${pill}</div>
+          <div class="text-xs text-muted mt-0.5">${escapeHtml(meta.doc || "")}</div>
+          <div class="text-xs text-muted mt-0.5">default: <span class="font-mono">${escapeHtml(JSON.stringify(state.defaults[name]))}</span></div>
+        </div>
+        <div class="md:col-span-2 flex items-start gap-2 flex-wrap">
+          <div>${widget}</div>
+          ${reset}
+          ${err ? `<div class="text-xs text-down mt-1 w-full">${escapeHtml(err)}</div>` : ""}
+        </div>
+      </div>`;
+  }
+
+  function render() {
+    if (!state) return;
+    const groups = {};
+    for (const [name, meta] of Object.entries(state.schema)) {
+      const g = meta.group || "Other";
+      (groups[g] ||= []).push([name, meta]);
+    }
+    const groupOrder = ["Entry", "Pyramiding", "Exits", "Sizing", "Other"];
+    let html = "";
+    for (const g of groupOrder) {
+      if (!groups[g]) continue;
+      html += `<div class="mb-4">
+        <div class="text-xs uppercase tracking-wide text-muted mb-1">${g}</div>
+        <div>${groups[g].map(([n, m]) => renderField(n, m)).join("")}</div>
+      </div>`;
+    }
+    const overrideCount = Object.keys(state.schema).filter(n => isOverridden(n)).length;
+    const dirtyCount = Object.keys(dirty).length;
+    const errCount = state.errors ? Object.keys(state.errors).length : 0;
+    status.innerHTML = `${overrideCount} overridden${dirtyCount ? ` · ${dirtyCount} unsaved` : ""}${errCount ? ` · <span class="text-down">${errCount} error(s)</span>` : ""}`;
+
+    body.innerHTML = `
+      ${html}
+      <div class="flex items-center gap-2 pt-3 border-t border-default text-sm">
+        <button id="params-save" class="btn-accent" ${dirtyCount === 0 ? "disabled" : ""}>Save</button>
+        <button id="params-reset-all" class="btn-ghost">Reset all to defaults</button>
+        <span id="params-toast" class="text-xs text-muted ml-2"></span>
+      </div>`;
+    bindHandlers();
+  }
+
+  function bindHandlers() {
+    body.querySelectorAll("[data-fname]").forEach(el => {
+      el.addEventListener("change", () => {
+        const name = el.dataset.fname;
+        const meta = state.schema[name];
+        let v;
+        if (meta.kind === "bool") v = el.checked;
+        else if (meta.kind === "tuple_str_2") {
+          const cur = (fieldValue(name) || ["", ""]).slice();
+          cur[parseInt(el.dataset.idx)] = el.value;
+          v = cur;
+        } else if (meta.kind === "tuple_pair_list") {
+          const cur = (fieldValue(name) || []).map(p => p.slice());
+          const i = parseInt(el.dataset.idx), c = parseInt(el.dataset.col);
+          cur[i][c] = el.value === "" ? null : Number(el.value);
+          v = cur;
+        } else if (meta.kind.endsWith("int") || meta.kind.endsWith("float") || meta.kind === "int" || meta.kind === "float") {
+          v = el.value === "" ? null : Number(el.value);
+        } else {
+          v = el.value === "" ? null : el.value;
+        }
+        set(name, v);
+      });
+    });
+    body.querySelectorAll("[data-clear]").forEach(el => {
+      el.addEventListener("click", () => clear(el.dataset.clear));
+    });
+    body.querySelectorAll("[data-pair-add]").forEach(el => {
+      el.addEventListener("click", () => {
+        const name = el.dataset.pairAdd;
+        const cur = (fieldValue(name) || []).map(p => p.slice());
+        cur.push([0, 0]);
+        set(name, cur);
+      });
+    });
+    body.querySelectorAll("[data-pair-remove]").forEach(el => {
+      el.addEventListener("click", () => {
+        const name = el.dataset.pairRemove;
+        const idx = parseInt(el.dataset.idx);
+        const cur = (fieldValue(name) || []).map(p => p.slice());
+        cur.splice(idx, 1);
+        set(name, cur);
+      });
+    });
+    const saveBtn = document.getElementById("params-save");
+    if (saveBtn) saveBtn.addEventListener("click", save);
+    const resetBtn = document.getElementById("params-reset-all");
+    if (resetBtn) resetBtn.addEventListener("click", resetAll);
+  }
+
+  async function load() {
+    const r = await fetch(`/api/portfolio/${PORTFOLIO_ID}/params`);
+    if (!r.ok) { body.innerHTML = `<div class="text-down">Failed to load: ${r.status}</div>`; return; }
+    state = await r.json();
+    dirty = {};
+    render();
+  }
+
+  async function save() {
+    const merged = { ...state.overrides, ...dirty };
+    const r = await fetch(`/api/portfolio/${PORTFOLIO_ID}/params`, {
+      method: "PUT",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({ overrides: merged }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      state.errors = j.errors || { _: "Save failed" };
+      render();
+      return;
+    }
+    dirty = {};
+    state.overrides = j.overrides;
+    state.effective = j.effective;
+    state.errors = {};
+    render();
+    document.getElementById("params-toast").textContent = "Saved — trader picks up changes within 60s.";
+  }
+
+  async function resetAll() {
+    if (!confirm("Reset all parameters to strategy defaults?")) return;
+    const r = await fetch(`/api/portfolio/${PORTFOLIO_ID}/params`, { method: "DELETE" });
+    if (!r.ok) { alert("Reset failed."); return; }
+    await load();
+    document.getElementById("params-toast").textContent = "Reset to defaults.";
+  }
+
+  details.addEventListener("toggle", () => {
+    if (details.open && state === null) load();
   });
-  const series = chart.addAreaSeries({ lineColor: '#3b82f6', topColor: 'rgba(59,130,246,0.4)', bottomColor: 'rgba(59,130,246,0.0)' });
-  series.setData(data.map(d => ({ time: Math.floor(new Date(d.ts).getTime() / 1000), value: d.equity })));
-  chart.timeScale().fitContent();
-  new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight })).observe(el);
 })();
 </script>
 {% endblock %}

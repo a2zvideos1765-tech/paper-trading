@@ -6,32 +6,32 @@
 {%- endmacro %}
 
 {% macro pct(value) -%}
-  <span class="{% if value > 0 %}text-up{% elif value < 0 %}text-down{% else %}text-slate-400{% endif %}">
+  <span class="{% if value > 0 %}text-up{% elif value < 0 %}text-down{% else %}text-muted{% endif %}">
     {{ "{:+.2f}".format(value) }}%
   </span>
 {%- endmacro %}
 
 {% block content %}
 <!-- Top summary -->
-<section class="bg-ink-soft rounded-xl p-5 border border-white/5 mb-4">
+<section class="card-2 p-5 mb-4">
   <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
     <div>
-      <div class="text-xs text-slate-400 uppercase tracking-wide">Total equity</div>
-      <div class="text-2xl font-mono font-semibold mt-1">{{ money(totals.equity, 0) }}</div>
+      <div class="text-xs text-muted uppercase tracking-wide">Total equity</div>
+      <div class="text-2xl font-mono font-semibold mt-1 text-default">{{ money(totals.equity, 0) }}</div>
     </div>
     <div>
-      <div class="text-xs text-slate-400 uppercase tracking-wide">Total capital</div>
-      <div class="text-2xl font-mono font-semibold mt-1 text-slate-300">{{ money(totals.capital, 0) }}</div>
+      <div class="text-xs text-muted uppercase tracking-wide">Total capital</div>
+      <div class="text-2xl font-mono font-semibold mt-1 text-muted">{{ money(totals.capital, 0) }}</div>
     </div>
     <div>
-      <div class="text-xs text-slate-400 uppercase tracking-wide">Day P&amp;L</div>
+      <div class="text-xs text-muted uppercase tracking-wide">Day P&amp;L</div>
       <div class="text-2xl font-mono font-semibold mt-1
-                  {% if totals.day_change > 0 %}text-up{% elif totals.day_change < 0 %}text-down{% endif %}">
+                  {% if totals.day_change > 0 %}text-up{% elif totals.day_change < 0 %}text-down{% else %}text-default{% endif %}">
         {{ money(totals.day_change, 0) }}
       </div>
     </div>
     <div>
-      <div class="text-xs text-slate-400 uppercase tracking-wide">Total return</div>
+      <div class="text-xs text-muted uppercase tracking-wide">Total return</div>
       <div class="text-2xl font-mono font-semibold mt-1">{{ pct(totals.total_pct) }}</div>
     </div>
   </div>
@@ -40,56 +40,56 @@
 <!-- Runner health strip -->
 <section class="mb-4 flex flex-wrap gap-2 text-xs">
   {% for r in runners %}
-    <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-ink-soft border
-                {% if r.stale or r.status == 'error' %}border-down/40 text-down
-                {% elif r.status == 'sleeping' %}border-white/10 text-slate-400
-                {% else %}border-up/40 text-up{% endif %}">
+    <div class="flex items-center gap-1.5 px-2 py-1 rounded card
+                {% if r.stale or r.status == 'error' %}border-default{% endif %}">
       <span class="inline-block w-1.5 h-1.5 rounded-full
                    {% if r.stale or r.status == 'error' %}bg-down
-                   {% elif r.status == 'sleeping' %}bg-slate-500
-                   {% else %}bg-up{% endif %}"></span>
-      <span class="font-mono">{{ r.app }}</span>
-      <span class="text-slate-400">·</span>
-      <span>{{ r.status }}</span>
+                   {% elif r.status == 'sleeping' %}bg-muted
+                   {% else %}bg-up{% endif %}"
+            style="
+              {% if r.stale or r.status == 'error' %}background: var(--down);
+              {% elif r.status == 'sleeping' %}background: var(--text-muted);
+              {% else %}background: var(--up);{% endif %}"></span>
+      <span class="font-mono text-default">{{ r.app }}</span>
+      <span class="text-muted">·</span>
+      <span class="text-muted">{{ r.status }}</span>
     </div>
   {% else %}
-    <div class="text-slate-500 text-xs">No runner heartbeats yet — start poller/trader.</div>
+    <div class="text-muted text-xs">No runner heartbeats yet — start poller/trader.</div>
   {% endfor %}
 </section>
 
 <!-- Portfolio cards -->
 <section class="grid grid-cols-1 md:grid-cols-2 gap-3">
   {% for c in cards %}
-    <a href="/portfolio/{{ c.id }}"
-       class="bg-ink-soft rounded-xl p-4 border border-white/5 hover:border-white/10
-              transition block">
+    <a href="/portfolio/{{ c.id }}" class="card-2 card-hover p-4 block transition">
       <div class="flex items-start justify-between mb-3">
         <div class="min-w-0">
-          <div class="font-semibold truncate">{{ c.name }}</div>
-          <div class="text-xs text-slate-400 mt-0.5">{{ c.strategy_id }} · capital {{ money(c.capital, 0) }}</div>
+          <div class="font-semibold truncate text-default">{{ c.name }}</div>
+          <div class="text-xs text-muted mt-0.5">{{ c.strategy_id }} · capital {{ money(c.capital, 0) }}</div>
         </div>
         <div class="text-right">
-          <div class="font-mono font-semibold">{{ money(c.equity, 0) }}</div>
+          <div class="font-mono font-semibold text-default">{{ money(c.equity, 0) }}</div>
           <div class="text-xs">{{ pct(c.total_pct) }}</div>
         </div>
       </div>
       <div class="grid grid-cols-3 gap-2 text-xs">
         <div>
-          <div class="text-slate-400">Day</div>
+          <div class="text-muted">Day</div>
           <div class="font-mono">{{ pct(c.day_change_pct) }}</div>
         </div>
         <div>
-          <div class="text-slate-400">Open</div>
-          <div class="font-mono">{{ c.open_positions }}</div>
+          <div class="text-muted">Open</div>
+          <div class="font-mono text-default">{{ c.open_positions }}</div>
         </div>
         <div>
-          <div class="text-slate-400">Trades</div>
-          <div class="font-mono">{{ c.trade_count }}</div>
+          <div class="text-muted">Trades</div>
+          <div class="font-mono text-default">{{ c.trade_count }}</div>
         </div>
       </div>
     </a>
   {% else %}
-    <div class="text-slate-500 col-span-full text-center py-12 border border-dashed border-white/10 rounded-xl">
+    <div class="text-muted col-span-full text-center py-12 card border-dashed">
       No portfolios yet. The trader bootstraps from <code>config/portfolios.yaml</code> on first run.
     </div>
   {% endfor %}
