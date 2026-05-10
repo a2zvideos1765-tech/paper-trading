@@ -63,15 +63,17 @@ async def _load_one(pool: asyncpg.Pool, symbol: str, interval: str, df: pd.DataF
          float(o), float(h), float(l), float(c), int(v))
         for ts, o, h, l, c, v in df[["timestamp", "open", "high", "low", "close", "volume"]].itertuples(index=False)
     ]
+    CHUNK = 1000
     async with pool.acquire() as c:
-        await c.executemany(
-            """
-            INSERT INTO candles (symbol, interval, ts, open, high, low, close, volume)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (symbol, interval, ts) DO NOTHING
-            """,
-            rows,
-        )
+        for i in range(0, len(rows), CHUNK):
+            await c.executemany(
+                """
+                INSERT INTO candles (symbol, interval, ts, open, high, low, close, volume)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (symbol, interval, ts) DO NOTHING
+                """,
+                rows[i : i + CHUNK],
+            )
     return len(rows)
 
 
@@ -88,7 +90,7 @@ async def _run(args: argparse.Namespace) -> None:
     target = f"{(parsed.path or '/').lstrip('/')}@{parsed.hostname}:{parsed.port}"
     print(f"Loading {len(csvs)} files from {src} (interval={interval}) into {target}")
 
-    pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4, command_timeout=120)
+    pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4, command_timeout=300)
     try:
         total_rows = 0
         for path in csvs:
