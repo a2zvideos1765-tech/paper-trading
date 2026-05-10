@@ -34,14 +34,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="Paper Trading", docs_url=None, redoc_url=None)
 
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.session_secret,
-    same_site="lax",
-    https_only=False,  # Caddy terminates TLS upstream; the cookie stays internal
-    max_age=14 * 24 * 3600,
-)
-
 # Jinja templates exposed on app.state so routes share one renderer.
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR    = Path(__file__).parent / "static"
@@ -52,6 +44,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # Auth gate — every page except /login and /health requires a session.
+# Must be defined BEFORE SessionMiddleware is added so that SessionMiddleware
+# wraps it (i.e. session is populated before auth_gate reads it).
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     public_paths = {"/login", "/health"}
@@ -61,6 +55,17 @@ async def auth_gate(request: Request, call_next):
     if not is_authenticated(request):
         return RedirectResponse(url="/login", status_code=303)
     return await call_next(request)
+
+
+# SessionMiddleware added last so it becomes the outermost layer.
+# Starlette builds the stack inside-out: last add_middleware call = outermost.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    same_site="lax",
+    https_only=False,  # Caddy terminates TLS upstream; the cookie stays internal
+    max_age=14 * 24 * 3600,
+)
 
 
 app.include_router(login.router)
