@@ -1,5 +1,21 @@
 """Live data poller: once per minute during market hours, fetch the most recent
-1-minute bar for each symbol in config/universe.yaml and upsert to `candles`.
+5-minute candles for each symbol in config/universe.yaml and upsert to `candles`.
+
+Why 5-minute, not 1-minute? The engine (and the entire backtest grid) was tuned
+on 5-min bars; the historical CSVs in `data/angel_symbols/` are 5-min bars. The
+trader queries `interval='5m'` for replay (see runners/trader.py CANDLE_INTERVAL).
+Writing 1-min bars from the poller would leave the trader blind during market
+hours — it would only see the previous night's backfill. Keep one interval
+end-to-end.
+
+The nightly backfill still pulls 1-min bars too (see runners/backfill.py
+EQUITY_INTERVALS) so the dashboard can offer a finer-grained chart later if
+needed; live polling sticks to 5m.
+
+We poll every minute even though the bar is 5 minutes long: each poll fetches a
+trailing 5-minute window, so the still-forming current bar gets refreshed via
+ON CONFLICT DO UPDATE until it finalises. This keeps trader latency low without
+extra Angel calls per symbol.
 
 Run via PM2:  pm2 start ecosystem.config.js --only paperaglo-poller
 Run manually: python -m src.runners.poller
@@ -20,7 +36,7 @@ from src.core.universe import all_specs
 
 
 log = setup_logging("poller")
-INTERVAL = "1m"
+INTERVAL = "5m"  # MUST match runners/trader.py CANDLE_INTERVAL and load_history.py default.
 
 
 async def upsert_bars(symbol: str, df) -> int:
@@ -45,11 +61,13 @@ async def upsert_bars(symbol: str, df) -> int:
 
 
 async def poll_once(client: AngelClient) -> None:
-    """One pass over the universe — fetch the trailing minute and upsert."""
+    """One pass over the universe — fetch the trailing few 5-min bars and upsert."""
     specs = all_specs()
     now = now_ist()
-    # Ask for a 5-minute trailing window so we self-heal any missed minute.
-    since = (now - timedelta(minutes=5)).replace(second=0, microsecond=0)
+    # 15-minute trailing window: covers the in-progress 5-min bar plus the two
+    # prior bars, so a single missed cycle self-heals on the next poll. UPSERTs
+    # are cheap; over-fetching by a couple of bars is the right trade-off.
+    since = (now - timedelta(minutes=15)).replace(second=0, microsecond=0)
     until = now.replace(second=0, microsecond=0)
 
     total = 0

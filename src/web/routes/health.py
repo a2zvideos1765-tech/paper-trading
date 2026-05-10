@@ -37,7 +37,8 @@ async def health() -> JSONResponse:
 
     # Last candle ts (sanity check for the poller)
     try:
-        last = await fetchrow("SELECT max(ts) AS t FROM candles WHERE interval = '1m'")
+        # Match the poller's interval — see runners/poller.py INTERVAL.
+        last = await fetchrow("SELECT max(ts) AS t FROM candles WHERE interval = '5m'")
         payload["last_candle_ts"] = last["t"].isoformat() if last and last["t"] else None
     except Exception:  # noqa: BLE001
         payload["last_candle_ts"] = None
