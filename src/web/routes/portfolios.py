@@ -76,9 +76,8 @@ async def portfolio_detail(request: Request, portfolio_id: int) -> HTMLResponse:
     )
 
     return request.app.state.templates.TemplateResponse(
-        "portfolio.html",
+        request, "portfolio.html",
         {
-            "request": request,
             "portfolio": dict(p),
             "eq": dict(eq_now) if eq_now else {
                 "cash": float(p["capital"]),

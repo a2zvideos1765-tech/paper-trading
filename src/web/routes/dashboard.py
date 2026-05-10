@@ -89,6 +89,6 @@ async def index(request: Request) -> HTMLResponse:
     }
     totals["total_pct"] = (totals["equity"] / totals["capital"] - 1) * 100 if totals["capital"] else 0
     return request.app.state.templates.TemplateResponse(
-        "dashboard.html",
-        {"request": request, "cards": cards, "runners": runners, "totals": totals},
+        request, "dashboard.html",
+        {"cards": cards, "runners": runners, "totals": totals},
     )

@@ -16,7 +16,7 @@ async def login_form(request: Request) -> HTMLResponse:
     if auth.is_authenticated(request):
         return RedirectResponse("/", status_code=303)
     return request.app.state.templates.TemplateResponse(
-        "login.html", {"request": request, "error": None}
+        request, "login.html", {"error": None}
     )
 
 
@@ -24,7 +24,7 @@ async def login_form(request: Request) -> HTMLResponse:
 async def login_submit(request: Request, password: str = Form(...)) -> HTMLResponse:
     if not auth.check_password(password):
         return request.app.state.templates.TemplateResponse(
-            "login.html", {"request": request, "error": "Incorrect password."},
+            request, "login.html", {"error": "Incorrect password."},
             status_code=401,
         )
     auth.login(request)

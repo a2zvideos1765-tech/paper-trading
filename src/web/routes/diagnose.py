@@ -60,9 +60,8 @@ async def diagnose(request: Request, portfolio_id: int, symbol: str, ts: str) ->
     )
 
     return request.app.state.templates.TemplateResponse(
-        "diagnose.html",
+        request, "diagnose.html",
         {
-            "request": request,
             "portfolio": dict(p),
             "strategy": strategy,
             "symbol": symbol,

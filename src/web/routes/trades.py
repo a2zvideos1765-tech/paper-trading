@@ -25,5 +25,5 @@ async def trades_page(request: Request, limit: int = 200) -> HTMLResponse:
         limit,
     )
     return request.app.state.templates.TemplateResponse(
-        "trades.html", {"request": request, "trades": [dict(r) for r in rows], "limit": limit},
+        request, "trades.html", {"trades": [dict(r) for r in rows], "limit": limit},
     )
