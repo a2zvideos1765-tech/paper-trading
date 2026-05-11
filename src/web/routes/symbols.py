@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from src.core.config import REPO_ROOT
 from src.core.db import execute, fetch, fetchrow
+from src.web.auth import require_admin
 
 
 router = APIRouter()
@@ -113,7 +114,8 @@ class AddSymbolBody(BaseModel):
 
 
 @router.post("/api/symbols", status_code=201)
-async def add_symbol(body: AddSymbolBody) -> JSONResponse:
+async def add_symbol(body: AddSymbolBody, request: Request) -> JSONResponse:
+    require_admin(request)
     inst = await fetchrow(
         "SELECT token, symbol, exchange, instrument_type FROM instruments WHERE token = $1",
         body.token,
@@ -151,7 +153,8 @@ async def add_symbol(body: AddSymbolBody) -> JSONResponse:
 
 
 @router.delete("/api/symbols/{symbol}/{exchange}")
-async def remove_symbol(symbol: str, exchange: str) -> JSONResponse:
+async def remove_symbol(symbol: str, exchange: str, request: Request) -> JSONResponse:
+    require_admin(request)
     result = await execute(
         "UPDATE universe_symbols SET enabled = FALSE WHERE symbol = $1 AND exchange = $2",
         symbol, exchange.upper(),
@@ -179,7 +182,8 @@ def _spawn_refresh() -> None:
 
 
 @router.post("/api/symbols/refresh", status_code=202)
-async def trigger_refresh(background: BackgroundTasks) -> JSONResponse:
+async def trigger_refresh(background: BackgroundTasks, request: Request) -> JSONResponse:
+    require_admin(request)
     # Mark "running" pre-emptively so the UI flips immediately.
     await execute(
         """

@@ -50,6 +50,7 @@ class PortfolioRow:
     strategy_id: str
     capital: float
     enabled: bool
+    started_at: datetime
 
 
 # ---------- Loading state from DB ----------
@@ -57,7 +58,7 @@ class PortfolioRow:
 async def load_portfolios() -> list[PortfolioRow]:
     async with conn() as c:
         rows = await c.fetch(
-            "SELECT id, name, strategy_id, capital::float8, enabled "
+            "SELECT id, name, strategy_id, capital::float8, enabled, started_at "
             "FROM portfolios WHERE enabled = TRUE ORDER BY id"
         )
     return [PortfolioRow(**dict(r)) for r in rows]

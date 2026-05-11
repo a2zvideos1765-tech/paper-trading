@@ -186,6 +186,12 @@ PG_PASSWORD=CHANGE_ME
 # Dashboard login (pick any password — this is what you type at /login)
 DASHBOARD_PASSWORD=CHANGE_ME
 
+# Optional read-only password to share with friends. Anyone logging in
+# with this can browse the dashboard but cannot add/remove symbols,
+# tweak strategy parameters, or trigger any backend action. Omit (or
+# leave blank) to disable view-only access entirely.
+VIEWER_PASSWORD=
+
 # A long random string used to sign session cookies
 # Generate one with: python3 -c "import secrets; print(secrets.token_hex(32))"
 SESSION_SECRET=CHANGE_ME
@@ -471,6 +477,54 @@ portfolios) are: **S6_tiered_exit**, **S14_concentrated**, **S23_s20_equity8**,
 by editing the YAML and `pm2 restart paperaglo-trader`.
 
 ---
+
+## Sharing the dashboard read-only (view-only mode)
+
+To let a friend browse the dashboard without giving them edit access:
+
+1. On the VPS, set `VIEWER_PASSWORD` in `.env` to a different password
+   from `DASHBOARD_PASSWORD`.
+2. `pm2 restart paperaglo-web`
+3. Share the **viewer** password with your friend (never share
+   `DASHBOARD_PASSWORD`).
+
+What viewers can do:
+
+- See every page: dashboard, portfolios, holdings, trades, symbols,
+  health.
+- See the equity curve, NIFTY / SENSEX overlay, and strategy parameters.
+
+What viewers **cannot** do:
+
+- Add or remove symbols (the "Add symbol" panel and ✕ buttons are hidden).
+- Trigger an instrument-master refresh.
+- Edit strategy parameters (the inputs are disabled and the Save / Reset
+  buttons are absent).
+- Hit any mutation endpoint directly — the server returns 403 even if
+  they craft a curl request with their session cookie.
+
+A small grey "view-only" pill next to the logo tells viewers which mode
+they're in. Leave `VIEWER_PASSWORD` blank in `.env` to disable view-only
+access entirely.
+
+## Forward-only trading
+
+The trader only emits trades from the moment a portfolio is first
+registered — historical candles in the DB are kept for charting research
+but never produce backdated paper trades. Each portfolio stores its
+`started_at` timestamp (set on first bootstrap from `portfolios.yaml`)
+and the engine's candle window is anchored to that timestamp.
+
+This means:
+
+- A freshly added portfolio starts with **flat** equity at its configured
+  capital and stays there until indicators warm up enough for a signal
+  (typically a few trading days of 5-minute bars).
+- Existing portfolios keep their original `started_at` across YAML
+  re-runs — restarting `paperaglo-trader` never resets the clock.
+- To "restart" a portfolio from scratch, manually update its row:
+  `UPDATE portfolios SET started_at = now() WHERE name = '...';` and
+  delete its `trades` / `equity_snapshots` / `positions`.
 
 ## Light / dark theme
 

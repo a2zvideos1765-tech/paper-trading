@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -13,6 +13,7 @@ from src.core.db import execute, fetch, fetchrow
 from src.strategies.registry import get as get_strategy
 from src.strategies.schema import field_defaults, public_schema
 from src.strategies.validation import coerce_and_apply
+from src.web.auth import require_admin
 
 
 router = APIRouter(prefix="/api")
@@ -166,7 +167,8 @@ class PutParamsBody(BaseModel):
 
 
 @router.put("/portfolio/{portfolio_id}/params")
-async def put_params(portfolio_id: int, body: PutParamsBody) -> JSONResponse:
+async def put_params(portfolio_id: int, body: PutParamsBody, request: Request) -> JSONResponse:
+    require_admin(request)
     p = await fetchrow(
         "SELECT id, strategy_id FROM portfolios WHERE id = $1",
         portfolio_id,
@@ -203,7 +205,8 @@ async def put_params(portfolio_id: int, body: PutParamsBody) -> JSONResponse:
 
 
 @router.delete("/portfolio/{portfolio_id}/params")
-async def delete_params(portfolio_id: int) -> JSONResponse:
+async def delete_params(portfolio_id: int, request: Request) -> JSONResponse:
+    require_admin(request)
     await execute(
         "DELETE FROM portfolio_overrides WHERE portfolio_id = $1",
         portfolio_id,

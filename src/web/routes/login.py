@@ -22,12 +22,13 @@ async def login_form(request: Request) -> HTMLResponse:
 
 @router.post("/login", response_class=HTMLResponse)
 async def login_submit(request: Request, password: str = Form(...)) -> HTMLResponse:
-    if not auth.check_password(password):
+    role = auth.check_password(password)
+    if role is None:
         return request.app.state.templates.TemplateResponse(
             request, "login.html", {"error": "Incorrect password."},
             status_code=401,
         )
-    auth.login(request)
+    auth.login(request, role)
     return RedirectResponse("/", status_code=303)
 
 

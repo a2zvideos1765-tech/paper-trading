@@ -19,6 +19,10 @@
   <div class="text-xs text-muted mt-1">
     Strategy <span class="font-mono text-default">{{ portfolio.strategy_id }}</span>
     · Capital {{ money(portfolio.capital, 0) }}
+    {% if portfolio.started_at %}
+      · Paper trading since
+      <span class="font-mono text-default">{{ portfolio.started_at.strftime("%Y-%m-%d %H:%M") }} IST</span>
+    {% endif %}
     {% if not portfolio.enabled %}<span class="ml-2 pill pill-down">disabled</span>{% endif %}
   </div>
 </header>
@@ -56,7 +60,7 @@
 <section class="card-2 mb-4 overflow-hidden">
   <details id="params-details">
     <summary class="px-4 py-3 border-b border-default text-sm font-semibold cursor-pointer flex items-center justify-between text-default">
-      <span>Strategy parameters</span>
+      <span>Strategy parameters{% if is_viewer %} <span class="ml-1 pill pill-muted text-[10px]">read-only</span>{% endif %}</span>
       <span id="params-status" class="text-xs text-muted font-normal"></span>
     </summary>
     <div id="params-body" class="p-4 text-sm text-muted">Loading…</div>
@@ -151,6 +155,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 // ==== Strategy parameters editor ====
 (() => {
   const PORTFOLIO_ID = {{ portfolio.id }};
+  const IS_VIEWER = {{ 'true' if is_viewer else 'false' }};
   const body = document.getElementById("params-body");
   const status = document.getElementById("params-status");
   const details = document.getElementById("params-details");
@@ -289,14 +294,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     const errCount = state.errors ? Object.keys(state.errors).length : 0;
     status.innerHTML = `${overrideCount} overridden${dirtyCount ? ` · ${dirtyCount} unsaved` : ""}${errCount ? ` · <span class="text-down">${errCount} error(s)</span>` : ""}`;
 
-    body.innerHTML = `
-      ${html}
-      <div class="flex items-center gap-2 pt-3 border-t border-default text-sm">
-        <button id="params-save" class="btn-accent" ${dirtyCount === 0 ? "disabled" : ""}>Save</button>
-        <button id="params-reset-all" class="btn-ghost">Reset all to defaults</button>
-        <span id="params-toast" class="text-xs text-muted ml-2"></span>
-      </div>`;
-    bindHandlers();
+    const actions = IS_VIEWER
+      ? `<div class="text-xs text-muted pt-3 border-t border-default">Read-only — sign in with the admin password to edit.</div>`
+      : `<div class="flex items-center gap-2 pt-3 border-t border-default text-sm">
+           <button id="params-save" class="btn-accent" ${dirtyCount === 0 ? "disabled" : ""}>Save</button>
+           <button id="params-reset-all" class="btn-ghost">Reset all to defaults</button>
+           <span id="params-toast" class="text-xs text-muted ml-2"></span>
+         </div>`;
+    body.innerHTML = `${html}${actions}`;
+    if (IS_VIEWER) {
+      // Disable every input + hide the reset chip; the form is purely display.
+      body.querySelectorAll("input, select, button[data-clear], button[data-pair-add], button[data-pair-remove]")
+          .forEach(el => { el.disabled = true; el.classList.add("opacity-60", "cursor-not-allowed"); });
+    } else {
+      bindHandlers();
+    }
   }
 
   function bindHandlers() {

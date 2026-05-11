@@ -53,6 +53,9 @@
       <a href="/" class="flex items-center gap-2 font-semibold shrink-0">
         <span class="inline-block w-2.5 h-2.5 rounded-full" style="background: var(--accent);"></span>
         <span>Paper Trading</span>
+        {% if is_viewer %}
+          <span class="ml-2 pill pill-muted text-[10px] uppercase tracking-wide">view-only</span>
+        {% endif %}
       </a>
       <nav class="hidden md:flex items-center gap-6 text-sm">
         {% set p = request.url.path %}

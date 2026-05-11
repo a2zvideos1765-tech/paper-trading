@@ -17,7 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.core.config import REPO_ROOT, settings
 from src.core.db import close_pool, get_pool
 from src.core.logging import setup_logging
-from src.web.auth import is_authenticated
+from src.web.auth import is_authenticated, is_viewer
 from src.web.routes import api, dashboard, diagnose, health, login, portfolios, symbols, trades
 
 
@@ -37,7 +37,14 @@ app = FastAPI(lifespan=lifespan, title="Paper Trading", docs_url=None, redoc_url
 # Jinja templates exposed on app.state so routes share one renderer.
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR    = Path(__file__).parent / "static"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def _is_viewer_ctx(request: Request) -> dict:
+    """Injected into every template render so write UI can branch on role."""
+    return {"is_viewer": is_viewer(request)}
+
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR), context_processors=[_is_viewer_ctx])
 app.state.templates = templates
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

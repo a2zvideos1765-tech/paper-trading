@@ -16,11 +16,14 @@
     {% else %}
       <div class="text-down">Never refreshed — run "Refresh now" once.</div>
     {% endif %}
-    <button id="refresh-btn" class="btn-ghost mt-1 text-xs">Refresh now</button>
-    <span id="refresh-state" class="ml-2 text-muted"></span>
+    {% if not is_viewer %}
+      <button id="refresh-btn" class="btn-ghost mt-1 text-xs">Refresh now</button>
+      <span id="refresh-state" class="ml-2 text-muted"></span>
+    {% endif %}
   </div>
 </header>
 
+{% if not is_viewer %}
 <!-- Add symbol -->
 <section class="card-2 p-4 mb-4">
   <div class="text-xs text-muted uppercase mb-2">Add symbol</div>
@@ -47,6 +50,7 @@
     </label>
   </div>
 </section>
+{% endif %}
 
 <!-- Universe -->
 <section class="card-2 mb-4 overflow-hidden">
@@ -81,9 +85,11 @@
             {{ u.added_at.strftime("%Y-%m-%d") if u.added_at else "" }}
           </td>
           <td class="px-4 py-2 text-right">
+            {% if not is_viewer %}
             <button class="remove-btn text-down/70 hover:text-down text-sm"
                     data-symbol="{{ u.symbol }}" data-exchange="{{ u.exchange }}"
                     title="Remove from watch list">✕</button>
+            {% endif %}
           </td>
         </tr>
       {% else %}
@@ -153,6 +159,8 @@
   const dropdown = $("search-dropdown");
   const refreshBtn = $("refresh-btn");
   const refreshState = $("refresh-state");
+  // In viewer mode the add-symbol form and refresh button are absent; bail.
+  if (!input || !refreshBtn) return;
 
   let lastQ = "";
   let timer;

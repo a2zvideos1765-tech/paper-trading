@@ -14,7 +14,8 @@ router = APIRouter()
 @router.get("/portfolio/{portfolio_id}", response_class=HTMLResponse)
 async def portfolio_detail(request: Request, portfolio_id: int) -> HTMLResponse:
     p = await fetchrow(
-        "SELECT id, name, strategy_id, capital::float8, enabled FROM portfolios WHERE id = $1",
+        "SELECT id, name, strategy_id, capital::float8, enabled, started_at "
+        "FROM portfolios WHERE id = $1",
         portfolio_id,
     )
     if not p:

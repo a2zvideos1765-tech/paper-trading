@@ -43,6 +43,7 @@ class Settings:
     web_host: str
     web_port: int
     dashboard_password: str
+    viewer_password: str | None
     session_secret: str
 
     poller_interval_seconds: int
@@ -74,6 +75,7 @@ def load_settings() -> Settings:
         web_host=_opt("WEB_HOST", "127.0.0.1"),
         web_port=int(_opt("WEB_PORT", "8000")),
         dashboard_password=_req("DASHBOARD_PASSWORD"),
+        viewer_password=(os.getenv("VIEWER_PASSWORD") or None),
         session_secret=_req("SESSION_SECRET"),
         poller_interval_seconds=int(_opt("POLLER_INTERVAL_SECONDS", "60")),
         trader_interval_seconds=int(_opt("TRADER_INTERVAL_SECONDS", "60")),

@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import timedelta
-from pathlib import Path
 
 import yaml
 
@@ -27,7 +25,6 @@ from src.core.logging import setup_logging
 from src.core.time import is_market_open, now_ist, seconds_until_market_open
 from src.core.universe import load_universe
 from src.engine.replay import (
-    DEFAULT_LOOKBACK_DAYS,
     PortfolioRow,
     load_candles_window,
     load_index_close,
@@ -67,10 +64,11 @@ async def sync_portfolios_from_yaml() -> None:
 
     async with conn() as c:
         for r in yaml_rows:
+            # started_at is preserved on existing rows; new rows get now().
             await c.execute(
                 """
-                INSERT INTO portfolios (name, strategy_id, capital, enabled)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO portfolios (name, strategy_id, capital, enabled, started_at)
+                VALUES ($1, $2, $3, $4, now())
                 ON CONFLICT (name) DO UPDATE
                   SET strategy_id = EXCLUDED.strategy_id,
                       capital = EXCLUDED.capital,
@@ -78,6 +76,20 @@ async def sync_portfolios_from_yaml() -> None:
                 """,
                 r["name"], r["strategy"], float(r["capital"]),
                 bool(r.get("enabled", True)),
+            )
+            # Seed the origin equity snapshot for any portfolio that has no history yet,
+            # so its curve renders with a clean starting point at started_at.
+            await c.execute(
+                """
+                INSERT INTO equity_snapshots (portfolio_id, ts, cash, holdings_value, equity, open_positions)
+                SELECT p.id, p.started_at, p.capital, 0, p.capital, 0
+                  FROM portfolios p
+                 WHERE p.name = $1
+                   AND NOT EXISTS (
+                         SELECT 1 FROM equity_snapshots e WHERE e.portfolio_id = p.id
+                   )
+                """,
+                r["name"],
             )
         # Mark any existing DB row not in YAML as disabled.
         await c.execute(
@@ -104,14 +116,11 @@ async def tick() -> None:
     equity_symbols = [s.symbol for s in equities]
 
     until = now_ist().replace(second=0, microsecond=0)
-    since = until - timedelta(days=DEFAULT_LOOKBACK_DAYS)
-    candles = await load_candles_window(equity_symbols, CANDLE_INTERVAL, since, until)
-
-    if candles.empty:
-        log.warning("no candles in lookback window — skipping tick",
-                    extra={"since": since.isoformat(), "until": until.isoformat()})
-        await heartbeat("trader", "sleeping", detail="no candles loaded")
-        return
+    # Forward-only: the candle window for each portfolio starts at started_at.
+    # We load the union once (earliest started_at across all portfolios) and let
+    # each portfolio slice its own subset by timestamp before replay.
+    earliest_start = min(p.started_at for p in portfolios)
+    candles = await load_candles_window(equity_symbols, CANDLE_INTERVAL, earliest_start, until)
 
     nifty   = await load_index_close("NIFTY_50", interval="1d")
     sensex  = await load_index_close("SENSEX",   interval="1d")
@@ -119,7 +128,13 @@ async def tick() -> None:
     for p in portfolios:
         try:
             strategy = get_strategy(p.strategy_id)
-            await replay_one_portfolio(p, strategy, candles, CHARGES, nifty, sensex)
+            # Each portfolio sees only its own forward window. Empty is fine —
+            # indicators have nothing to chew on yet, no trades are emitted.
+            if candles.empty:
+                p_candles = candles
+            else:
+                p_candles = candles[candles["timestamp"] >= p.started_at]
+            await replay_one_portfolio(p, strategy, p_candles, CHARGES, nifty, sensex)
         except Exception as exc:  # noqa: BLE001
             log.exception("portfolio replay failed",
                           extra={"portfolio_id": p.id, "portfolio_name": p.name})
@@ -133,7 +148,7 @@ async def main() -> None:
     await get_pool()
     log.info("trader starting", extra={"tick_seconds": settings.trader_interval_seconds,
                                         "offset_seconds": settings.trader_offset_seconds,
-                                        "lookback_days": DEFAULT_LOOKBACK_DAYS})
+                                        "mode": "forward-only"})
     await sync_portfolios_from_yaml()
 
     # Initial start-up offset so the first tick fires after the poller has had a chance to write.
