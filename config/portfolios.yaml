@@ -62,3 +62,13 @@ portfolios:
     strategy: S31_s24_persist
     capital: 100000
     enabled: true
+
+  # ── S50_drop3_e15_alloc10_vol11 ──
+  - name: S50_drop3_e15_alloc10_vol11_50k
+    strategy: S50_drop3_e15_alloc10_vol11
+    capital: 50000
+    enabled: true
+  - name: S50_drop3_e15_alloc10_vol11_100k
+    strategy: S50_drop3_e15_alloc10_vol11
+    capital: 100000
+    enabled: true
