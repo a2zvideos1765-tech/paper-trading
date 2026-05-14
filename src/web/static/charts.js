@@ -60,8 +60,14 @@
     }
 
     const colors = readThemeColors();
+    // Ensure the container is a flex column so the chart can grow and the
+    // legend stays pinned below it without overflowing into the next card.
+    el.style.display = 'flex';
+    el.style.flexDirection = 'column';
+
     const chartHost = document.createElement('div');
-    chartHost.style.height = '100%';
+    chartHost.style.flex = '1 1 auto';
+    chartHost.style.minHeight = '0';   // critical: lets flex shrink the chart instead of overflowing
     chartHost.style.width = '100%';
     el.appendChild(chartHost);
 
@@ -79,6 +85,17 @@
       { key: 'sensex', label: 'SENSEX',   color: colors.muted,  lineWidth: 1.5,      lineStyle: 3, dash: 'dashed' },
     ];
 
+    // Compute the spread across every series so we can short-circuit the chart's
+    // ultra-tight autoscale on flat / single-point data (e.g. day 1, only the
+    // seed equity row exists and benchmarks are still null).
+    const allValues = [];
+    for (const s of series) {
+      for (const d of data) if (d[s.key] != null) allValues.push(d[s.key]);
+    }
+    const vmin = allValues.length ? Math.min(...allValues) : 0;
+    const vmax = allValues.length ? Math.max(...allValues) : 0;
+    const flat = (vmax - vmin) / (vmax || 1) < 0.001;   // < 0.1% spread → "flat"
+
     for (const s of series) {
       s.handle = chart.addLineSeries({
         color: s.color,
@@ -94,6 +111,20 @@
       s.visible = true;
     }
 
+    // When the data is effectively flat, pin the price scale to a humane window
+    // around the value so the Y-axis doesn't show 49999.94 → 50000.06.
+    if (flat && allValues.length) {
+      const mid = vmax;
+      const pad = Math.max(mid * 0.05, 100);   // ±5% or ±₹100, whichever is larger
+      for (const s of series) {
+        s.handle.applyOptions({
+          autoscaleInfoProvider: () => ({
+            priceRange: { minValue: mid - pad, maxValue: mid + pad },
+          }),
+        });
+      }
+    }
+
     chart.timeScale().fitContent();
 
     // Resize observer keeps the chart sized to its container on layout changes.
@@ -104,6 +135,7 @@
 
     // Legend below the chart with click-to-toggle visibility.
     const legendHost = document.createElement('div');
+    legendHost.style.flex = '0 0 auto';
     el.appendChild(legendHost);
     const legend = buildLegend(legendHost, series, data);
 
