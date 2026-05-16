@@ -27,8 +27,13 @@ Thumbs.db
 .idea/
 
 # data — large CSVs we copy in for the one-shot loader stay local
-data/
+data/*
 *.csv
+# …except the small regime reference files: the multi-regime classifier
+# (S228/S283) seeds NIFTY 50 + India VIX daily history from these via
+# tools/load_regime_history.py, so they must deploy with the repo.
+!data/INDIA_VIX_extended.csv
+!data/NIFTY_50_extended.csv
 
 # pm2
 .pm2/

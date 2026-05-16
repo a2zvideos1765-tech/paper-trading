@@ -72,3 +72,23 @@ portfolios:
     strategy: S50_drop3_e15_alloc10_vol11
     capital: 100000
     enabled: true
+
+  # ── S228_multiregime_bear_pyr_small (multi-regime; needs INDIA_VIX) ──
+  - name: S228_multiregime_bear_pyr_small_50k
+    strategy: S228_multiregime_bear_pyr_small
+    capital: 50000
+    enabled: true
+  - name: S228_multiregime_bear_pyr_small_100k
+    strategy: S228_multiregime_bear_pyr_small
+    capital: 100000
+    enabled: true
+
+  # ── S283_mm_dma_classic (multi-regime; needs INDIA_VIX) ──
+  - name: S283_mm_dma_classic_50k
+    strategy: S283_mm_dma_classic
+    capital: 50000
+    enabled: true
+  - name: S283_mm_dma_classic_100k
+    strategy: S283_mm_dma_classic
+    capital: 100000
+    enabled: true

@@ -280,7 +280,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       const g = meta.group || "Other";
       (groups[g] ||= []).push([name, meta]);
     }
-    const groupOrder = ["Entry", "Pyramiding", "Exits", "Sizing", "Other"];
+    const groupOrder = ["Entry", "Regime", "Pyramiding", "Exits", "Sizing", "Other"];
     let html = "";
     for (const g of groupOrder) {
       if (!groups[g]) continue;

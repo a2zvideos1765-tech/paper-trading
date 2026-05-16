@@ -81,6 +81,64 @@ FIELD_SCHEMA: dict[str, dict[str, Any]] = {
         "kind": "optional_float", "group": "Entry",
         "doc": "Optional: max distance from 90-day low (as fraction). E.g. 0.05 = within 5% of low.",
     },
+    "entry_below_ma20": {
+        "kind": "bool", "group": "Entry",
+        "doc": "If true, only enter when close ≤ 20-day MA — rejects dips that are still near all-time highs.",
+    },
+    "entry_below_high_pct": {
+        "kind": "optional_float", "group": "Entry",
+        "doc": "Optional: only enter if close is at least this fraction below the 90-day high (e.g. 0.15 = -15%).",
+    },
+    "sma_above": {
+        "kind": "optional_int", "options": [10, 20], "group": "Entry",
+        "doc": "Optional: only enter if today's close ≥ this-day SMA (10 or 20). Filters confirmed downtrends.",
+    },
+    "sma_above_prev": {
+        "kind": "optional_int", "options": [10, 20], "group": "Entry",
+        "doc": "Optional: only enter if PRIOR day's close ≥ this-day SMA (10 or 20). Bull-pullback friendly.",
+    },
+    "staged_entry": {
+        "kind": "bool", "group": "Entry",
+        "doc": "If true, buy half the allocation on signal day, the rest next day if price hasn't bounced.",
+    },
+
+    # Regime / momentum gates
+    "macd_filter": {
+        "kind": "optional_str", "options": ["positive", "rising"], "group": "Regime",
+        "doc": "Optional MACD-histogram gate: 'positive' (hist>0) or 'rising' (hist > hist 3 days ago).",
+    },
+    "macd_filter_in_bear_market": {
+        "kind": "bool", "group": "Regime",
+        "doc": "If true, the MACD filter is applied only when NIFTY is in a bearish regime.",
+    },
+    "macd_recent_crossover": {
+        "kind": "bool", "group": "Regime",
+        "doc": "If true, require MACD hist negative 20 days ago but positive today. Needs macd_filter='positive'.",
+    },
+    "sma_above_prev_in_bear": {
+        "kind": "bool", "group": "Regime",
+        "doc": "If true, sma_above_prev is enforced only in bear regime (lifted in bull markets).",
+    },
+    "regime_dma_period": {
+        "kind": "int", "group": "Regime",
+        "doc": "DMA period that classifies bull/bear regime for the bear-only gates (default 50; 200 = deep bear only).",
+    },
+    "nifty_momentum_filter": {
+        "kind": "optional_float", "group": "Regime",
+        "doc": "Optional: block all new entries when NIFTY's N-day return is below this (e.g. -0.05 = -5%).",
+    },
+    "nifty_momentum_lookback": {
+        "kind": "int", "group": "Regime",
+        "doc": "Lookback (trading days) for nifty_momentum_filter.",
+    },
+    "vix_bear_threshold": {
+        "kind": "optional_float", "group": "Regime",
+        "doc": "India VIX level above which a day is forced into bear regime (used by multi-regime strategies).",
+    },
+    "vix_only_bear": {
+        "kind": "bool", "group": "Regime",
+        "doc": "If true, bear regime is triggered ONLY by VIX (no DMA-based bear classification).",
+    },
 
     # Pyramiding
     "pyramid_levels": {
@@ -121,11 +179,23 @@ FIELD_SCHEMA: dict[str, dict[str, Any]] = {
         "kind": "optional_float", "group": "Exits",
         "doc": "Optional ATR-based stop: exit if loss exceeds N × entry-day ATR.",
     },
+    "exit_tiers_bear": {
+        "kind": "tuple_pair_list", "group": "Exits",
+        "doc": "Optional bear-regime exit tiers used instead of exit_tiers when NIFTY is below its regime DMA.",
+    },
+    "patience_sell_after_days": {
+        "kind": "optional_int", "group": "Exits",
+        "doc": "Optional: after N trading days, sell a still-profitable position that hasn't hit the next tier.",
+    },
+    "patience_sell_min_profit": {
+        "kind": "float", "group": "Exits",
+        "doc": "Minimum unrealized gain required for a patience sell to fire (e.g. 0.03 = +3%).",
+    },
 
     # Sizing
     "allocation_mode": {
-        "kind": "str", "options": ["fixed", "pct_equity"], "group": "Sizing",
-        "doc": "'fixed' uses allocation_per_trade rupees; 'pct_equity' uses allocation_pct of equity.",
+        "kind": "str", "options": ["fixed", "pct_equity", "pct_cash"], "group": "Sizing",
+        "doc": "'fixed' uses allocation_per_trade rupees; 'pct_equity'/'pct_cash' use allocation_pct of equity/cash.",
     },
     "allocation_per_trade": {
         "kind": "float", "group": "Sizing",
@@ -143,10 +213,24 @@ FIELD_SCHEMA: dict[str, dict[str, Any]] = {
         "kind": "float", "group": "Sizing",
         "doc": "Per-trade slippage applied to fills (0.001 = 10bps).",
     },
+    "displace_threshold": {
+        "kind": "optional_float", "group": "Sizing",
+        "doc": "Optional: when a candidate's drop ≤ this and cash is short, sell a holding to fund it (e.g. -0.10).",
+    },
+    "displace_sell_rule": {
+        "kind": "str", "options": ["smallest_gain", "oldest"], "group": "Sizing",
+        "doc": "Which holding to sell when displacement fires: 'smallest_gain' or 'oldest'.",
+    },
 }
 
 # Fields the UI must NOT show / overrides table must NOT touch.
-PROTECTED_FIELDS = {"name", "starting_cash"}
+#   name, starting_cash  — identity / trader-managed
+#   scan_times           — variable-length string tuple; no editor widget
+#   mode_params_*        — nested ModeParams dataclasses; configured in strategy files only
+PROTECTED_FIELDS = {
+    "name", "starting_cash", "scan_times",
+    "mode_params_bull", "mode_params_bear", "mode_params_sideways",
+}
 
 
 def field_defaults() -> dict[str, Any]:
