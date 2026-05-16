@@ -1,4 +1,4 @@
-# Paper Trading
+# Paper Trading 2.0
 
 Live paper-trading rig for the strategies developed in the companion
 [backtester project](../i-want-to-build-an-algo). Runs multiple strategies in
@@ -647,10 +647,39 @@ psql -U paper paper_trading -c \
 ## Re-syncing the engine from upstream
 
 When the backtester project's `engine_v2.py` evolves, replace
-`src/engine/v2_engine.py` with the new version, then re-apply the two
-`# === paper-trading patch ===` blocks (the in-memory regime cache).
-**Run `pytest tests/test_parity.py` to confirm the engine still produces
-deterministic output before deploying.**
+`src/engine/v2_engine.py` with the new version, then re-apply the four
+`# === paper-trading patch ===` blocks. The trading rig has no CSV files —
+the trader primes in-memory caches from the DB instead:
+
+1. **regime cache + prime_\* helpers** — `prime_regime_index()` /
+   `clear_regime_cache()` for NIFTY_50 / SENSEX / INDIA_VIX.
+2. **ATR(14) pandas≥2.2 fix** — the `groupby().transform()` rewrite in
+   `daily_features` (upstream's `.apply()` raises on modern pandas).
+3. **`_load_regime_index` / `_load_nifty_extended_close`** — read from the
+   primed cache instead of `data/angel_symbols/*.csv`.
+4. **`classify_regime_by_date`** — read NIFTY + India VIX from the cache
+   instead of `NIFTY_50_extended.csv` / `INDIA_VIX_extended.csv`.
+
+**Run `pytest tests/test_parity.py tests/test_strategies.py` to confirm the
+engine still produces deterministic output before deploying.**
+
+### Multi-regime strategies + India VIX
+
+`S228_multiregime_bear_pyr_small` and `S283_mm_dma_classic` switch their whole
+parameter set (entry threshold, allocation, exits, MACD gate, pyramid ladder)
+based on whether NIFTY 50 is in a bull / bear / sideways regime, with an India
+VIX fear override. They need INDIA VIX daily data:
+
+- `INDIA_VIX` is added to the universe as `kind='index'` by
+  `sql/005_india_vix.sql` — the nightly `paperaglo-backfill` keeps it current.
+- `tools/load_regime_history.py` seeds ~8 years of NIFTY 50 + India VIX daily
+  closes from `data/NIFTY_50_extended.csv` and `data/INDIA_VIX_extended.csv`
+  (one-time, so the 50-DMA regime classifier works on day one). The nightly
+  backfill then keeps both current.
+
+Do **not** add India VIX from the dashboard /symbols search — the engine looks
+it up under the exact symbol `INDIA_VIX`, and the search would store Angel's
+spelling instead.
 
 ---
 

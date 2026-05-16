@@ -28,6 +28,9 @@ def test_registry_loads_all_strategies():
         "S28_s23_nifty",
         "S29_s23_sensex",
         "S31_s24_persist",
+        "S50_drop3_e15_alloc10_vol11",
+        "S228_multiregime_bear_pyr_small",
+        "S283_mm_dma_classic",
     }
 
 
@@ -136,3 +139,64 @@ def test_s31_parameters_match_upstream():
     assert s.trigger_window == ("09:30", "15:00")
     assert s.trigger_persistence_candles == 3
     assert s.trigger_persistence_threshold == -0.03
+
+
+def test_s50_parameters_match_upstream():
+    # strategies_v2.py out["S50_drop3_e15_alloc10_vol11"], line 669.
+    s = get("S50_drop3_e15_alloc10_vol11")
+    assert s.fall_threshold == -0.030
+    assert s.volume_spike_min == 1.1
+    assert s.pyramid_levels == ((-0.10, 0.05),)
+    assert s.pyramid_basis == "avg"
+    assert s.pyramid_volume_filter is True
+    assert s.exit_tiers == ((0.15, 0.5), (0.25, 1.0))
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.10
+
+
+def test_s228_parameters_match_upstream():
+    # strategies_v2.py out["S228_multiregime_bear_pyr_small"], line 4149.
+    s = get("S228_multiregime_bear_pyr_small")
+    assert s.fall_threshold == -0.030
+    assert s.volume_spike_min == 1.1
+    assert s.pyramid_levels == ((-0.08, 0.06), (-0.16, 0.05), (-0.25, 0.04))
+    assert s.exit_tiers == ((0.15, 0.5), (0.25, 1.0))
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.14
+    assert s.scan_times == ("11:00", "14:00")
+    assert s.macd_filter == "positive"
+    assert s.macd_filter_in_bear_market is True
+    assert s.regime_source == "NIFTY_50"
+    assert s.vix_bear_threshold == 20.0
+    # mode switching
+    assert s.mode_params_bull.allocation_pct == 0.16
+    assert s.mode_params_bear.allocation_pct == 0.10
+    assert s.mode_params_bear.exit_tiers == ((0.10, 0.5), (0.18, 1.0))
+    assert s.mode_params_bear.volume_spike_min == 1.3
+    assert s.mode_params_bear.sma_above_prev == 20
+    assert s.mode_params_bear.pyramid_levels == ((-0.08, 0.04), (-0.16, 0.03), (-0.25, 0.02))
+    assert s.mode_params_sideways.allocation_pct == 0.12
+
+
+def test_s283_parameters_match_upstream():
+    # strategies_v2.py out["S283_mm_dma_classic"], line 5361.
+    s = get("S283_mm_dma_classic")
+    assert s.fall_threshold == -0.030
+    assert s.volume_spike_min == 1.1
+    assert s.pyramid_levels == ((-0.08, 0.06), (-0.16, 0.05), (-0.25, 0.04))
+    assert s.exit_tiers == ((0.15, 0.5), (0.25, 1.0))
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.16
+    assert s.scan_times == ("11:00", "14:00")
+    assert s.macd_filter == "positive"
+    assert s.macd_filter_in_bear_market is True
+    assert s.regime_source == "NIFTY_50"
+    assert s.vix_bear_threshold == 20.0
+    assert s.vix_only_bear is False
+    assert s.mode_params_bull.allocation_pct == 0.18
+    assert s.mode_params_bull.exit_tiers == ((0.15, 0.5), (0.26, 1.0))
+    assert s.mode_params_bear.allocation_pct == 0.14
+    assert s.mode_params_bear.exit_tiers == ((0.13, 0.5), (0.22, 1.0))
+    assert s.mode_params_bear.volume_spike_min == 1.2
+    assert s.mode_params_bear.sma_above_prev == 20
+    assert s.mode_params_sideways.allocation_pct == 0.16

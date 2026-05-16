@@ -2,11 +2,16 @@
 
 Source: ../i-want-to-build-an-algo/engine_v2.py
 Sync rule: keep this file byte-for-byte identical to upstream EXCEPT for the
-regime-index loading section, which we patched to read from an in-memory cache
-(populated by the trader from the DB) instead of CSV files on disk.
+sections that read market data from CSV files on disk. The live trader has no
+such files — it primes in-memory caches from the DB before each replay.
 
 If you update upstream engine_v2.py, re-vendor by copying it here and re-applying
-the regime patch (clearly marked with `# === paper-trading patch ===` comments).
+every block marked `# === paper-trading patch ===`. There are four:
+  1. regime-index cache + prime_* helpers (NIFTY_50 / SENSEX / INDIA_VIX)
+  2. the ATR(14) pandas>=2.2 transform fix in daily_features
+  3. _load_regime_index / _load_nifty_extended_close — read from the cache
+  4. classify_regime_by_date — read India VIX from the cache
+Then run `pytest tests/test_parity.py` before deploying.
 """
 
 from __future__ import annotations
@@ -19,21 +24,55 @@ import pandas as pd
 
 
 # === paper-trading patch ============================================
-# Original code read regime indices from `data/angel_symbols/{name}.csv`.
-# Live trader populates this dict from the DB before each replay.
-_REGIME_INDEX_CACHE: dict[str, pd.Series] = {}
+# Upstream read regime/VIX series from CSV files under data/. The live
+# trader populates these in-memory caches from the DB before each replay
+# (see src/engine/replay.py). Tests prime them directly.
+_REGIME_INDEX_CACHE: dict[str, pd.Series] = {}   # name -> daily-close series, indexed by date
+_REGIME_CACHE: dict[str, pd.Series] = {}          # classify_regime_by_date memo, keyed by params
 
 
 def prime_regime_index(name: str, daily_close: pd.Series) -> None:
-    """Trader calls this once per replay to inject NIFTY_50/SENSEX daily-close
-    series. `daily_close` should be indexed by `date` (Python date, not Timestamp).
-    """
+    """Inject a daily-close series for a regime index (NIFTY_50 / SENSEX /
+    INDIA_VIX). `daily_close` is indexed by Python date. Called once per replay."""
     _REGIME_INDEX_CACHE[name] = daily_close
 
 
 def clear_regime_cache() -> None:
+    """Drop both caches. The trader calls this at the start of every replay so
+    a stale index series can never leak across portfolios/ticks."""
     _REGIME_INDEX_CACHE.clear()
+    _REGIME_CACHE.clear()
 # === end patch ======================================================
+
+
+@dataclass(frozen=True)
+class ModeParams:
+    """Parameter overrides applied when a specific market regime (bull/bear/sideways) is active.
+
+    Any field left as None will fall back to the base StrategyV2 value — so you only need to
+    specify what should change, not replicate the full config.
+
+    Supported overrideable fields:
+      fall_threshold, allocation_pct, exit_tiers, volume_spike_min,
+      macd_filter, sma_above_prev, pyramid_levels, max_new_buys_per_day.
+    """
+    fall_threshold:      float | None = None
+    allocation_pct:      float | None = None
+    exit_tiers:          tuple[tuple[float, float], ...] | None = None
+    volume_spike_min:    float | None = None
+    macd_filter:         str   | None = None   # "positive" | "rising" | "__off__" (explicit off)
+    sma_above_prev:      int   | None = None   # 10, 20, 50 | "__off__" (use -1)
+    pyramid_levels:      tuple[tuple[float, float], ...] | None = None
+    max_new_buys_per_day: int  | None = None
+
+
+def _meff(mode: "ModeParams | None", field: str, base):
+    """Return mode override if set, else base StrategyV2 value."""
+    if mode is not None:
+        v = getattr(mode, field, None)
+        if v is not None:
+            return v
+    return base
 
 
 @dataclass(frozen=True)
@@ -42,44 +81,171 @@ class StrategyV2:
 
     # Entry
     fall_threshold: float = -0.05
-    entry_lookback_days: int = 1
+    entry_lookback_days: int = 1  # 1 = single-day vs prev close; N = N-day cumulative vs N-day-ago close
     rsi_max: float | None = None
-    volume_spike_min: float | None = None
-    regime_filter: bool = False
+    volume_spike_min: float | None = None  # ratio vs 20-day avg same-window volume
+    regime_filter: bool = False  # require equal-weight universe proxy > 50-DMA
 
-    # Pyramiding
-    pyramid_levels: tuple[tuple[float, float], ...] = ()
-    pyramid_basis: str = "avg"
+    # Pyramiding (averaging down)
+    pyramid_levels: tuple[tuple[float, float], ...] = ()  # ((drop_pct_from_basis, allocation_rupees), ...)
+    pyramid_basis: str = "avg"  # "avg" (running avg_price) or "entry" (initial entry price)
 
-    # Exits
+    # Exit tiers — ordered (profit_pct_from_avg, fraction_of_current_qty)
     exit_tiers: tuple[tuple[float, float], ...] = ((0.30, 1.0),)
 
+    # Bear-regime exit tiers: when NIFTY is below its regime DMA (bear market), use these
+    # tiers instead of exit_tiers.  Default None → always use exit_tiers (backward-compatible).
+    # Rationale: in bear markets, positions recover partially but often don't reach the normal
+    # +15% / +25% targets — lowering to +10% / +18% realises those sluggish recoveries.
+    # Uses the same regime_source and regime_dma_period as MACD/SMA bear-market gates.
+    # Has no effect unless regime_source is set (or the strategy uses macd_filter_in_bear_market).
+    exit_tiers_bear: tuple[tuple[float, float], ...] | None = None
+
     # Stops
-    hard_stop_pct: float | None = None
+    hard_stop_pct: float | None = None  # e.g. -0.30 from avg_price → close entire position
     time_stop_days: int | None = None
-    trail_activate_pct: float | None = None
-    trail_drawdown_pct: float | None = None
+    trail_activate_pct: float | None = None  # e.g. 0.20 — activate trailing stop after this gain
+    trail_drawdown_pct: float | None = None  # e.g. 0.10 — sell when price < peak * (1 - this)
 
     # Sizing
-    allocation_mode: str = "fixed"
+    allocation_mode: str = "fixed"  # "fixed" or "pct_equity"
     allocation_per_trade: float = 10000.0
     allocation_pct: float = 0.05
 
-    # Iteration 2
-    atr_stop_multiplier: float | None = None
-    entry_signal: str = "drop"
-    pyramid_volume_filter: bool = False
+    # Iteration 2 additions
+    atr_stop_multiplier: float | None = None  # snapshot ATR(14) at entry; stop = avg_price - mult * entry_atr
+    entry_signal: str = "drop"  # "drop" or "drop_and_bollinger" (also requires close <= bb_lower20)
+    pyramid_volume_filter: bool = False  # require volume_spike on each pyramid add
+    entry_below_ma20: bool = False  # only enter if close <= 20-day MA (bb_mid20). Rejects ATH dips.
 
-    # Iteration 4
-    entry_mode: str = "scan"
-    trigger_window: tuple[str, str] = ("09:30", "15:00")
-    low_proximity_max: float | None = None
+    # Iteration 4 additions
+    entry_mode: str = "scan"  # "scan" (snapshot at scan_time) or "trigger" (first intraday cross of fall_threshold)
+    trigger_window: tuple[str, str] = ("09:30", "15:00")  # earliest/latest candle times for trigger firing
+    low_proximity_max: float | None = None  # buy only when close is within this fraction of 90-day low (e.g. 0.08)
 
-    # Iteration 5
-    regime_source: str | None = None
-    trigger_persistence_candles: int = 0
-    trigger_persistence_threshold: float = -0.03
-    trigger_require_green_candle: bool = False
+    # Iteration 5 additions
+    regime_source: str | None = None  # None = synthetic equal-weight proxy; "NIFTY_50" or "SENSEX" = real index close > 50-DMA
+    trigger_persistence_candles: int = 0  # require next N intraday candles to also be below trigger_persistence_threshold
+    trigger_persistence_threshold: float = -0.03  # the must-hold-below level for persistence_candles
+    trigger_require_green_candle: bool = False  # trigger candle must close >= open (buyer absorption)
+
+    # Iteration 7 — Round 4 additions
+    # MACD histogram filter on entry candidates.
+    #   "positive"  → macd_hist > 0   (momentum turned bullish; in uptrend territory)
+    #   "rising"    → macd_hist today > macd_hist 3 days ago  (momentum improving, even if negative)
+    # "rising" is the divergence proxy — selling pressure shrinking even while price is down.
+    macd_filter: str | None = None
+
+    # Staged initial entry: buy half the allocation on signal day, the other half the NEXT
+    # trading day if and only if the stock hasn't bounced above its initial entry price.
+    # Lowers average entry price in slow-recovery setups without a large pyramid drawdown.
+    staged_entry: bool = False
+
+    # When True, the MACD filter (macd_filter field) is applied ONLY when NIFTY is in a
+    # bearish regime (close < 50-DMA). In bull regimes the MACD gate is lifted so good
+    # intraday dips in uptrending markets are not rejected.
+    # Has no effect if macd_filter is None. Uses regime_source ("NIFTY_50" by default).
+    macd_filter_in_bear_market: bool = False
+
+    # NIFTY momentum filter: skip all new entries on days when NIFTY's N-day rolling
+    # return is below this threshold.
+    # Example: nifty_momentum_filter=-0.05, nifty_momentum_lookback=20 → block entries
+    # when NIFTY fell >5% over the past 20 trading days (rapid-correction detector).
+    # Unlike the 50-DMA regime gate (which is slow to flip), this responds within weeks
+    # to sharp sell-offs like the Oct-2024 to Mar-2025 correction.
+    # Default None → disabled, backward-compatible.
+    nifty_momentum_filter: float | None = None
+    nifty_momentum_lookback: int = 20
+
+    # Iteration 7 additions
+    # Patience sell: after N trading days, if unrealized return >= patience_sell_min_profit
+    # but still below the next exit tier target, sell the remaining position at market close.
+    # Only fires on PROFITABLE positions (no stop-loss behaviour; no re-entry loop risk).
+    # Default None → disabled, backward-compatible with all prior strategies.
+    patience_sell_after_days: int | None = None   # e.g. 60
+    patience_sell_min_profit: float = 0.0         # e.g. 0.03 → only accept if ≥ +3% unrealized
+
+    # Round 14 addition
+    # "Recent MACD crossover" filter: only accept entries where the MACD histogram was
+    # NEGATIVE 20 trading days ago but is POSITIVE today.
+    # Requires macd_filter="positive" to also be set (raises if macd_filter is None).
+    # Why: stocks in a long bull run keep MACD positive for months — a single-day drop
+    # while MACD is "residually positive" is low-quality. Requiring a recent zero-crossing
+    # ensures the stock was genuinely oversold (negative MACD) and is now genuinely
+    # recovering (positive MACD), just like 2022-23 genuine reversals.
+    macd_recent_crossover: bool = False  # Default False → backward-compatible
+
+    # Round 15 addition
+    # "Distance from 90-day high" filter: only enter if the stock's close is at least
+    # entry_below_high_pct below its 90-day rolling high.
+    # e.g. entry_below_high_pct=0.15 → close ≤ high_90d * (1 - 0.15) → stock down ≥15% from 90d high.
+    # Hypothesis: stocks near ATH that drop 3% are "dips in uptrend" (low mean-reversion edge).
+    # Stocks 15%+ below their 90-day high are in genuine deep correction where reversals are stronger.
+    # Default None → disabled, backward-compatible.
+    entry_below_high_pct: float | None = None
+
+    # SMA above filter: only enter if today's scan close >= N-day SMA of prior closes.
+    # e.g. sma_above=20 → close >= 20-DMA (stock in uptrend, -3% is a pullback not a breakdown).
+    # This filters out stocks in confirmed downtrends where mean reversion fails.
+    # Supported values: 10 (uses sma10 column) or 20 (reuses bb_mid20). Default None → disabled.
+    sma_above: int | None = None
+
+    # SMA above filter using PREVIOUS day's close (not today's scan close).
+    # e.g. sma_above_prev=10 → prev_close >= sma10 (stock was above SMA yesterday before today's drop).
+    # Better for bull-year pullbacks: stock was 103 (above SMA), drops to 100 today → allowed.
+    # In bear market: stock was 97 (below SMA), drops further → blocked.
+    # Contrast with sma_above: that compares today's (already-dropped) close, which falls below SMA
+    # even on legitimate bull-market pullbacks, destroying 2021-22 entry count.
+    # Supported values: 10 (uses sma10) or 20 (reuses bb_mid20). Default None → disabled.
+    sma_above_prev: int | None = None
+
+    # When True, sma_above_prev is applied ONLY in bear regime (same logic as macd_filter_in_bear_market).
+    # In bull market (NIFTY > 50-DMA): sma_above_prev is lifted → allows deep-correction entries.
+    # In bear market: sma_above_prev enforced → only recovery-phase stocks (above SMA) can be bought.
+    # Uses regime_source for the bear/bull determination.
+    # Has no effect if sma_above_prev is None. Default False → always applied when sma_above_prev is set.
+    sma_above_prev_in_bear: bool = False
+
+    # DMA period used to classify bear/bull regime for macd_filter_in_bear_market and
+    # sma_above_prev_in_bear.  Default 50 → identical to all prior strategies (backward-compatible).
+    # Set to 200 to only activate the bear-market quality gates when the index is in a DEEP bear
+    # (below 200-DMA) rather than a shallow correction (below 50-DMA but above 200-DMA).
+    # This lets the quality gate fire in 2022's global bear (below 200-DMA) while staying OFF
+    # during the shallower 2024-25 India correction where stocks were still above their long-run trend.
+    regime_dma_period: int = 50
+
+    # Multiple scan windows per day.
+    # When set, entries are attempted at EACH time in the tuple (e.g. ("11:00", "14:00")).
+    # Volume ratios for each window are computed independently so the 1.1× gate is calibrated
+    # to that time-of-day's typical volume accumulation.
+    # Pyramid adds and staged-entry second tranches always use scan_time (the primary window).
+    scan_times: tuple[str, ...] | None = None  # None → use (scan_time,)
+
+    # Position displacement for extreme intraday drops.
+    # When a candidate's change <= displace_threshold (e.g. -0.10) and cash is insufficient,
+    # sell one existing holding to fund the trade.  The holding sold is chosen by displace_sell_rule:
+    #   "smallest_gain" → sell the holding with the smallest unrealized gain (or biggest loss)
+    #   "oldest"        → sell the holding that has been held the longest
+    # Displacement never fires if holdings is empty or if cash is already sufficient.
+    displace_threshold: float | None = None   # e.g. -0.10 → sell a holding to buy a -10%+ stock
+    displace_sell_rule: str = "smallest_gain"
+
+    # Multi-regime mode switching.
+    # When any of these is set, the engine classifies each trading day as "bull", "bear",
+    # or "sideways" using NIFTY 50 (extended CSV, 2018→present):
+    #   bull     → NIFTY close > 50-DMA  AND  20-DMA > 50-DMA  (established uptrend)
+    #   bear     → NIFTY close < 50-DMA  AND  20-DMA < 50-DMA  (established downtrend)
+    #   sideways → all other days (transitional / chopping)
+    # Any field in ModeParams that is not None overrides the corresponding StrategyV2 field
+    # for that day.  Fields left as None use the base StrategyV2 value.
+    # All three can be None simultaneously → no regime switching (backward-compatible).
+    # Optional: vix_bear_threshold (default 20.0) — if India VIX > threshold AND NIFTY < 50-DMA,
+    # that day is forced into bear mode (high-fear corrections treated as bear regardless of 20-DMA).
+    mode_params_bull:     ModeParams | None = None
+    mode_params_bear:     ModeParams | None = None
+    mode_params_sideways: ModeParams | None = None
+    vix_bear_threshold:   float | None = 20.0   # None → VIX not used
+    vix_only_bear:        bool = False          # True → bear only via VIX (no DMA-based bear)
 
     # Misc
     scan_time: str = "11:00"
@@ -116,6 +282,15 @@ def delivery_charges_v2(turnover: float, side: str, charges: ChargeConfigV2) -> 
 
 # ---------- Indicator helpers ----------
 
+def _compute_macd_hist(closes: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.Series:
+    """MACD histogram: (EMA_fast − EMA_slow) − EMA_signal of that difference."""
+    ema_fast = closes.ewm(span=fast, adjust=False).mean()
+    ema_slow = closes.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    sig = macd.ewm(span=signal, adjust=False).mean()
+    return macd - sig
+
+
 def _wilder_rsi(closes: pd.Series, period: int = 14) -> pd.Series:
     delta = closes.diff()
     gain = delta.clip(lower=0.0)
@@ -128,6 +303,7 @@ def _wilder_rsi(closes: pd.Series, period: int = 14) -> pd.Series:
 
 
 def _wilder_atr(group: pd.DataFrame, period: int = 14) -> pd.Series:
+    """ATR(14) per symbol. group has columns high, low, daily_close, sorted by date."""
     prev_close = group["daily_close"].shift(1)
     tr = pd.concat([
         (group["high"] - group["low"]),
@@ -137,7 +313,36 @@ def _wilder_atr(group: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
 
-def daily_features(prices: pd.DataFrame, scan_time: str) -> pd.DataFrame:
+_FEATURES_CACHE: "dict[tuple, pd.DataFrame]" = {}
+
+
+def daily_features(prices: pd.DataFrame, scan_time: str, extra_scan_times: tuple[str, ...] = ()) -> pd.DataFrame:
+    """Return per (symbol, date) features: prev_close, rsi14, volume_avg20, scan_volume_avg20, etc.
+
+    `scan_volume` / `scan_volume_avg20` are computed for `scan_time` (the primary window) and
+    aliased as-is for backward compat.  For each time in `extra_scan_times` (e.g. "14:00") an
+    additional pair of columns is added: scan_volume_HHMM / scan_volume_avg20_HHMM so the engine
+    can use calibrated volume ratios at alternate scan windows.
+
+    Results are memoized per process: feature computation depends only on the price slice and
+    the scan windows, so running many strategies over the same period reuses one computation.
+    """
+    if len(prices):
+        _key = (
+            len(prices),
+            prices["timestamp"].iloc[0],
+            prices["timestamp"].iloc[-1],
+            float(prices["close"].iloc[0]),
+            float(prices["close"].iloc[-1]),
+            scan_time,
+            tuple(extra_scan_times),
+        )
+        _cached = _FEATURES_CACHE.get(_key)
+        if _cached is not None:
+            return _cached
+    else:
+        _key = None
+
     daily_close = (
         prices.sort_values("timestamp")
         .groupby(["symbol", "date"], as_index=False)
@@ -175,11 +380,32 @@ def daily_features(prices: pd.DataFrame, scan_time: str) -> pd.DataFrame:
     daily_close["bb_mid20"] = sma20
     daily_close["bb_lower20"] = sma20 - 2 * sd20
     daily_close["bb_upper20"] = sma20 + 2 * sd20
+    daily_close["sma10"] = daily_close.groupby("symbol")["daily_close"].transform(
+        lambda s: s.shift(1).rolling(10, min_periods=10).mean()
+    )
+    daily_close["sma50"] = daily_close.groupby("symbol")["daily_close"].transform(
+        lambda s: s.shift(1).rolling(50, min_periods=50).mean()
+    )
+    # 90-day low using yesterday's bar back (shift 1) to avoid same-day lookahead.
     daily_close["low_90d"] = (
         daily_close.groupby("symbol")["low"]
         .transform(lambda s: s.shift(1).rolling(90, min_periods=20).min())
     )
+    # 90-day high — same look-back, no same-day lookahead.
+    # Used to require that a stock has already corrected meaningfully from its recent peak.
+    daily_close["high_90d"] = (
+        daily_close.groupby("symbol")["high"]
+        .transform(lambda s: s.shift(1).rolling(90, min_periods=20).max())
+    )
+    # MACD histogram (12-26-9 standard) and a 3-day-lagged copy for "rising" filter.
+    daily_close["macd_hist"] = (
+        daily_close.groupby("symbol")["daily_close"]
+        .transform(lambda s: _compute_macd_hist(s, fast=12, slow=26, signal=9))
+    )
+    daily_close["macd_hist_3d_ago"] = daily_close.groupby("symbol")["macd_hist"].shift(3)
+    daily_close["macd_hist_20d_ago"] = daily_close.groupby("symbol")["macd_hist"].shift(20)
 
+    # Scan-window volume (cumulative volume from market open to scan_time per day per symbol)
     scan_window = prices[prices["time"] <= scan_time]
     scan_vol = (
         scan_window.groupby(["symbol", "date"], as_index=False)["volume"].sum()
@@ -189,39 +415,164 @@ def daily_features(prices: pd.DataFrame, scan_time: str) -> pd.DataFrame:
     scan_vol["scan_volume_avg20"] = scan_vol.groupby("symbol")["scan_volume"].transform(
         lambda s: s.shift(1).rolling(20, min_periods=5).mean()
     )
-    daily_close = daily_close.merge(
-        scan_vol[["symbol", "date", "scan_volume", "scan_volume_avg20"]],
-        on=["symbol", "date"], how="left",
-    )
+    daily_close = daily_close.merge(scan_vol[["symbol", "date", "scan_volume", "scan_volume_avg20"]], on=["symbol", "date"], how="left")
+
+    # Extra scan-time volumes (e.g. 14:00 for a dual-scan strategy)
+    for est in extra_scan_times:
+        est_key = est.replace(":", "")
+        est_window = prices[prices["time"] <= est]
+        est_sv = (
+            est_window.groupby(["symbol", "date"], as_index=False)["volume"].sum()
+            .rename(columns={"volume": f"scan_volume_{est_key}"})
+        )
+        est_sv = est_sv.sort_values(["symbol", "date"]).reset_index(drop=True)
+        est_sv[f"scan_volume_avg20_{est_key}"] = est_sv.groupby("symbol")[f"scan_volume_{est_key}"].transform(
+            lambda s: s.shift(1).rolling(20, min_periods=5).mean()
+        )
+        daily_close = daily_close.merge(
+            est_sv[["symbol", "date", f"scan_volume_{est_key}", f"scan_volume_avg20_{est_key}"]],
+            on=["symbol", "date"], how="left",
+        )
+
+    if _key is not None:
+        if len(_FEATURES_CACHE) > 16:
+            _FEATURES_CACHE.clear()
+        _FEATURES_CACHE[_key] = daily_close
     return daily_close
 
 
 # === paper-trading patch ============================================
+# Upstream read NIFTY_50.csv / SENSEX.csv / NIFTY_50_extended.csv from disk.
+# The live trader has no CSVs — it primes _REGIME_INDEX_CACHE from the DB via
+# prime_regime_index() before each replay. These return an empty series when
+# the index hasn't been primed (the caller falls back to the synthetic proxy).
 def _load_regime_index(name: str) -> pd.Series:
-    """Live trader primes _REGIME_INDEX_CACHE from the DB before calling
-    run_backtest_v2; tests can do the same. Returns empty series if not primed."""
+    """Return the primed daily-close series for `name`, or empty if not primed."""
     return _REGIME_INDEX_CACHE.get(name, pd.Series(dtype=float))
+
+
+def _load_nifty_extended_close() -> pd.Series:
+    """No extended CSV on the trading rig — the DB's NIFTY_50 daily history
+    (~1,200+ bars) is deep enough for a 50-DMA. Return the primed NIFTY_50 series."""
+    return _REGIME_INDEX_CACHE.get("NIFTY_50", pd.Series(dtype=float))
 # === end patch ======================================================
 
 
-def regime_series(daily_features_df: pd.DataFrame, source: str | None = None) -> pd.Series:
+def regime_series(daily_features_df: pd.DataFrame, source: str | None = None, dma_period: int = 50) -> pd.Series:
+    """Boolean Series indexed by date: True when the regime proxy is above its N-DMA.
+
+    `source`:
+      - None  -> synthetic equal-weight universe proxy from `daily_features_df` (back-compat).
+      - "NIFTY_50" / "SENSEX" -> real index close from data/angel_symbols/{source}.csv.
+    `dma_period`: lookback for the moving average threshold (default 50).
+
+    For NIFTY_50 with dma_period > 50, prefers NIFTY_50_extended.csv (starts 2018) so
+    long-period DMA (e.g. 200-DMA) has sufficient warmup history before the backtest window.
+    Critical: the rolling DMA is computed on the FULL historical series before restricting to
+    feature_dates, so historical context is not discarded before the DMA calculation.
+    """
+    feature_dates = set(daily_features_df["date"].unique())
     if source is None:
         pivot = daily_features_df.pivot_table(index="date", columns="symbol", values="daily_close")
         rebased = pivot.div(pivot.bfill().iloc[0]).mean(axis=1)
+        min_p = 20 if dma_period <= 50 else max(20, dma_period // 5)
+        dma = rebased.rolling(dma_period, min_periods=min_p).mean()
+        bull = rebased > dma
+        return bull.loc[bull.index.isin(feature_dates)]
     else:
-        index_close = _load_regime_index(source)
+        # For NIFTY_50 with long DMA, use the extended historical CSV (2018+) if available
+        # so that e.g. 200-DMA in 2021-22 is computed from genuine 200 trading days of history.
+        if source == "NIFTY_50" and dma_period > 50:
+            index_close = _load_nifty_extended_close()
+        else:
+            index_close = _load_regime_index(source)
         if index_close.empty:
+            # Fall back to synthetic if the file is missing so the strategy doesn't silently no-op.
             return regime_series(daily_features_df, source=None)
-        feature_dates = daily_features_df["date"].unique()
-        rebased = index_close.reindex(sorted(set(index_close.index).union(feature_dates))).ffill()
-        rebased = rebased.loc[rebased.index.isin(feature_dates)]
-    dma50 = rebased.rolling(50, min_periods=20).mean()
-    return rebased > dma50
+        # Compute DMA on FULL historical series (preserves warmup context), then restrict to
+        # feature_dates. This ensures the 200-DMA at e.g. 2021-05-08 reflects genuine 200-day
+        # history going back to 2020, not just the last 40 trading days of the short CSV.
+        min_p = 20 if dma_period <= 50 else max(20, dma_period // 5)
+        dma = index_close.rolling(dma_period, min_periods=min_p).mean()
+        bull_full = (index_close > dma).astype(float)  # float avoids object-dtype NaN on reindex
+        # Forward-fill any date gaps (weekends, holidays) then restrict to feature dates.
+        all_dates = sorted(feature_dates.union(set(bull_full.index)))
+        bull_reindexed = bull_full.reindex(all_dates).ffill().fillna(0.0).astype(bool)
+        return bull_reindexed.loc[bull_reindexed.index.isin(feature_dates)]
+
+
+def classify_regime_by_date(
+    vix_bear_threshold: float | None = 20.0,
+    vix_only_bear: bool = False,
+) -> pd.Series:
+    """Return a Series (date → 'bull' | 'bear' | 'sideways') using the extended NIFTY CSV.
+
+    When vix_only_bear=False (default):
+      1. If India VIX > vix_bear_threshold AND NIFTY < 50-DMA → 'bear'  (fear + breakdown)
+      2. NIFTY close > 50-DMA AND 20-DMA > 50-DMA → 'bull'  (established uptrend)
+      3. NIFTY close < 50-DMA AND 20-DMA < 50-DMA → 'bear'  (established downtrend)
+      4. Everything else → 'sideways'
+
+    When vix_only_bear=True:
+      Bear is triggered ONLY by VIX > threshold (no DMA-based bear).
+      This avoids misclassifying sharp-but-brief corrections as 'bear'
+      (e.g., 2024-25: only 19 days with VIX>20 vs 82 with DMA bear).
+
+    Results are cached by (vix_bear_threshold, vix_only_bear).
+    """
+    cache_key = f"regime_{vix_bear_threshold}_{vix_only_bear}"
+    if cache_key in _REGIME_CACHE:
+        return _REGIME_CACHE[cache_key]
+
+    # === paper-trading patch ============================================
+    # Upstream read NIFTY from NIFTY_50_extended.csv and VIX from
+    # INDIA_VIX_extended.csv. The trader primes both into _REGIME_INDEX_CACHE
+    # from the DB (NIFTY_50 + INDIA_VIX daily 1d closes) before each replay.
+    close = _REGIME_INDEX_CACHE.get("NIFTY_50", pd.Series(dtype=float))
+    if close.empty:
+        return pd.Series(dtype=str)
+    close = close.astype(float).sort_index()
+    # === end patch ======================================================
+
+    dma20 = close.rolling(20, min_periods=10).mean()
+    dma50 = close.rolling(50, min_periods=20).mean()
+
+    regime = pd.Series("sideways", index=close.index, dtype=str)
+    bull_mask = (close > dma50) & (dma20 > dma50)
+    regime[bull_mask] = "bull"
+
+    if not vix_only_bear:
+        # DMA-based bear classification
+        bear_mask = (close < dma50) & (dma20 < dma50)
+        regime[bear_mask] = "bear"
+
+    # === paper-trading patch ============================================
+    # VIX override: high fear → force bear (regardless of DMA). VIX daily
+    # closes are primed from the DB under the key "INDIA_VIX".
+    _vix = _REGIME_INDEX_CACHE.get("INDIA_VIX", pd.Series(dtype=float))
+    if vix_bear_threshold is not None and not _vix.empty:
+        vix_close = _vix.astype(float).sort_index().reindex(close.index).ffill()
+        if vix_only_bear:
+            vix_bear = vix_close > vix_bear_threshold
+        else:
+            vix_bear = (vix_close > vix_bear_threshold) & (close < dma50)
+        regime[vix_bear.fillna(False)] = "bear"
+    # === end patch ======================================================
+
+    _REGIME_CACHE[cache_key] = regime
+    return regime
 
 
 # ---------- Position bookkeeping ----------
 
-def _new_holding(qty: float, price: float, date, entry_atr: float | None = None) -> dict:
+def _new_holding(
+    qty: float,
+    price: float,
+    date,
+    entry_atr: float | None = None,
+    staged_pending: bool = False,
+    staged_remaining_alloc: float = 0.0,
+) -> dict:
     return {
         "qty": float(qty),
         "avg_price": float(price),
@@ -232,6 +583,8 @@ def _new_holding(qty: float, price: float, date, entry_atr: float | None = None)
         "tiers_hit": 0,
         "trail_armed": False,
         "entry_atr": float(entry_atr) if entry_atr is not None and not np.isnan(entry_atr) else None,
+        "staged_pending": staged_pending,
+        "staged_remaining_alloc": staged_remaining_alloc,
     }
 
 
@@ -253,25 +606,72 @@ def run_backtest_v2(
 
     Returns dict with summary, equity_curve, trades, open_positions.
     """
-    features = daily_features(prices, strategy.scan_time)
+    # Determine effective scan windows for entry (primary + any extras)
+    _effective_scan_times: tuple[str, ...] = strategy.scan_times if strategy.scan_times is not None else (strategy.scan_time,)
+    _primary_scan_time = _effective_scan_times[0]
+    _extra_scan_times = _effective_scan_times[1:]
+
+    features = daily_features(prices, _primary_scan_time, _extra_scan_times)
+
+    # Build the column list for the merge — include extra volume columns when present
+    _feature_cols = [
+        "symbol", "date",
+        "prev_close", "close_2d_ago", "close_3d_ago", "close_5d_ago",
+        "rsi14", "atr14",
+        "bb_mid20", "bb_lower20", "bb_upper20",
+        "sma10", "sma50",
+        "low_90d", "high_90d",
+        "macd_hist", "macd_hist_3d_ago", "macd_hist_20d_ago",
+        "scan_volume", "scan_volume_avg20",
+    ]
+    for _est in _extra_scan_times:
+        _est_key = _est.replace(":", "")
+        _feature_cols += [f"scan_volume_{_est_key}", f"scan_volume_avg20_{_est_key}"]
+
     prices = prices.merge(
-        features[[
-            "symbol", "date",
-            "prev_close", "close_2d_ago", "close_3d_ago", "close_5d_ago",
-            "rsi14", "atr14",
-            "bb_mid20", "bb_lower20", "bb_upper20",
-            "low_90d",
-            "scan_volume", "scan_volume_avg20",
-        ]],
+        features[_feature_cols],
         on=["symbol", "date"],
         how="left",
     )
 
     regime_ok_by_date = (
-        regime_series(features, source=strategy.regime_source)
+        regime_series(features, source=strategy.regime_source, dma_period=strategy.regime_dma_period)
         if strategy.regime_filter
         else None
     )
+
+    # Multi-regime classifier (bull / bear / sideways).  Only computed when mode_params are set.
+    _use_multiregime = (
+        strategy.mode_params_bull is not None
+        or strategy.mode_params_bear is not None
+        or strategy.mode_params_sideways is not None
+    )
+    mode_by_date: pd.Series | None = None
+    if _use_multiregime:
+        mode_by_date = classify_regime_by_date(
+            vix_bear_threshold=strategy.vix_bear_threshold,
+            vix_only_bear=strategy.vix_only_bear,
+        )
+
+    # Regime series used for conditional MACD and SMA filtering (legacy path).
+    bear_market_by_date: pd.Series | None = None
+    _need_regime = (
+        (strategy.macd_filter is not None and strategy.macd_filter_in_bear_market)
+        or (strategy.sma_above_prev is not None and strategy.sma_above_prev_in_bear)
+        or (strategy.exit_tiers_bear is not None)
+    )
+    if _need_regime:
+        src = strategy.regime_source or "NIFTY_50"
+        bear_market_by_date = regime_series(features, source=src, dma_period=strategy.regime_dma_period)
+        # bear_market_by_date: True = bullish, False = bearish (inverted below at point-of-use)
+
+    # NIFTY N-day momentum filter: skip new entries during rapid index corrections.
+    nifty_momentum_by_date: dict = {}
+    if strategy.nifty_momentum_filter is not None:
+        _nifty = _load_regime_index("NIFTY_50")
+        if not _nifty.empty:
+            _nifty_ret = _nifty.pct_change(strategy.nifty_momentum_lookback)
+            nifty_momentum_by_date = _nifty_ret.to_dict()
 
     if start_date:
         start = pd.to_datetime(start_date).date()
@@ -281,7 +681,7 @@ def run_backtest_v2(
     holdings: dict[str, dict] = {}
     trades: list[dict] = []
     equity_curve: list[dict] = []
-    trading_day_idx: dict = {}
+    trading_day_idx: dict = {}  # date -> index for time stops
     sorted_days = sorted(prices["date"].unique())
     for i, d in enumerate(sorted_days):
         trading_day_idx[d] = i
@@ -289,6 +689,29 @@ def run_backtest_v2(
     for day, day_prices in prices.groupby("date", sort=True):
         day_prices = day_prices.sort_values("timestamp")
         day_idx = trading_day_idx[day]
+
+        # ---- Resolve per-day mode params (multi-regime switching) ----
+        _day_mode: ModeParams | None = None
+        if mode_by_date is not None:
+            _mregime = mode_by_date.get(day, "sideways")
+            if _mregime == "bull":
+                _day_mode = strategy.mode_params_bull
+            elif _mregime == "bear":
+                _day_mode = strategy.mode_params_bear
+            else:
+                _day_mode = strategy.mode_params_sideways
+        # Effective per-day parameters (fall back to base strategy if mode param is None)
+        _eff_fall    = _meff(_day_mode, "fall_threshold",      strategy.fall_threshold)
+        _eff_alloc   = _meff(_day_mode, "allocation_pct",      strategy.allocation_pct)
+        _eff_exits   = _meff(_day_mode, "exit_tiers",          strategy.exit_tiers)
+        _eff_vol     = _meff(_day_mode, "volume_spike_min",     strategy.volume_spike_min)
+        _eff_macd    = _meff(_day_mode, "macd_filter",         strategy.macd_filter)
+        _eff_sma_p   = _meff(_day_mode, "sma_above_prev",      strategy.sma_above_prev)
+        _eff_pyrlvl  = _meff(_day_mode, "pyramid_levels",      strategy.pyramid_levels)
+        _eff_maxbuys = _meff(_day_mode, "max_new_buys_per_day", strategy.max_new_buys_per_day)
+        # "__off__" sentinel: explicit disable in a mode (overrides base strategy value)
+        if _eff_macd   == "__off__": _eff_macd   = None
+        if _eff_sma_p  == -1:       _eff_sma_p  = None  # -1 used to turn off sma_above_prev
 
         # ---- Exit pass: stops + tiered targets ----
         for symbol in list(holdings):
@@ -305,6 +728,7 @@ def run_backtest_v2(
             avg = position["avg_price"]
             sold_full = False
 
+            # 1) Hard stop on intraday low (fixed % or ATR-based)
             stop_price = None
             stop_reason = None
             if strategy.atr_stop_multiplier is not None and position.get("entry_atr"):
@@ -333,6 +757,7 @@ def run_backtest_v2(
             if sold_full:
                 continue
 
+            # 2) Time stop
             if strategy.time_stop_days is not None:
                 held_days = day_idx - trading_day_idx.get(position["entry_date"], day_idx)
                 if held_days >= strategy.time_stop_days and day_close < avg:
@@ -352,7 +777,15 @@ def run_backtest_v2(
                     del holdings[symbol]
                     continue
 
-            tiers = strategy.exit_tiers
+            # 3) Tiered profit exits — process tiers in order
+            # Priority: multi-regime _eff_exits > legacy exit_tiers_bear > base exit_tiers
+            if _day_mode is not None and _day_mode.exit_tiers is not None:
+                tiers = _eff_exits
+            elif strategy.exit_tiers_bear is not None and bear_market_by_date is not None:
+                _is_bear = not bool(bear_market_by_date.get(day, True))
+                tiers = strategy.exit_tiers_bear if _is_bear else strategy.exit_tiers
+            else:
+                tiers = strategy.exit_tiers
             tier_idx = position["tiers_hit"]
             while tier_idx < len(tiers) and not sold_full:
                 profit_pct, frac = tiers[tier_idx]
@@ -385,6 +818,7 @@ def run_backtest_v2(
             if sold_full:
                 continue
 
+            # 4) Trailing stop (if armed)
             if strategy.trail_activate_pct is not None and strategy.trail_drawdown_pct is not None:
                 if not position["trail_armed"]:
                     if day_high >= avg * (1 + strategy.trail_activate_pct):
@@ -407,10 +841,80 @@ def run_backtest_v2(
                         })
                         del holdings[symbol]
 
-        # ---- Pyramid add pass ----
+            # 5) Patience sell: profitable but stalled positions recycled after N days.
+            #    Only fires when unrealized_return >= patience_sell_min_profit AND
+            #    we are still below the NEXT un-hit tier target (otherwise tier logic fires).
+            #    Never fires on losing positions → no re-entry-loop risk.
+            if symbol in holdings and strategy.patience_sell_after_days is not None:
+                position = holdings[symbol]
+                held_days_count = day_idx - trading_day_idx.get(position["entry_date"], day_idx)
+                if held_days_count >= strategy.patience_sell_after_days:
+                    unrealized = day_close / position["avg_price"] - 1
+                    if unrealized >= strategy.patience_sell_min_profit:
+                        # Only fire if position hasn't exited yet (sold_full check is embedded via
+                        # `symbol in holdings`) and hasn't reached next tier on this very day.
+                        tier_idx = position["tiers_hit"]
+                        if strategy.exit_tiers_bear is not None and bear_market_by_date is not None:
+                            _is_bear_p = not bool(bear_market_by_date.get(day, True))
+                            tiers = strategy.exit_tiers_bear if _is_bear_p else strategy.exit_tiers
+                        else:
+                            tiers = strategy.exit_tiers
+                        next_tier_pct = tiers[tier_idx][0] if tier_idx < len(tiers) else 1e9
+                        if unrealized < next_tier_pct:
+                            qty = position["qty"]
+                            sell_price = day_close * (1 - strategy.slippage_rate)
+                            turnover = qty * sell_price
+                            fee = delivery_charges_v2(turnover, "SELL", charges)
+                            cash += turnover - fee
+                            trades.append({
+                                "date": str(day),
+                                "time": symbol_day.iloc[-1]["timestamp"].strftime("%H:%M"),
+                                "symbol": symbol, "side": "SELL", "qty": int(qty),
+                                "price": round(sell_price, 2), "turnover": round(turnover, 2),
+                                "charges": round(fee, 2), "cash_after": round(cash, 2),
+                                "reason": (
+                                    f"patience_{strategy.patience_sell_after_days}d"
+                                    f"_min{strategy.patience_sell_min_profit:.0%}"
+                                ),
+                            })
+                            del holdings[symbol]
+
+        # ---- Pyramid add pass: existing holdings only ----
         for symbol in list(holdings):
             position = holdings[symbol]
-            if position["pyramid_adds_hit"] >= len(strategy.pyramid_levels):
+
+            # Staged-entry second tranche (fires once, the trading day after initial entry)
+            if strategy.staged_entry and position.get("staged_pending", False):
+                symbol_day_s = day_prices[day_prices["symbol"] == symbol]
+                if not symbol_day_s.empty:
+                    scan_rows_s = symbol_day_s[symbol_day_s["time"] <= strategy.scan_time]
+                    if not scan_rows_s.empty:
+                        scan_row_s = scan_rows_s.iloc[-1]
+                        current_price_s = float(scan_row_s["close"])
+                        # Only add if price hasn't bounced above the original entry price
+                        if current_price_s <= position["entry_price"]:
+                            staged_alloc = position.get("staged_remaining_alloc", 0.0)
+                            buy_price_s = current_price_s * (1 + strategy.slippage_rate)
+                            qty_s = int(staged_alloc // buy_price_s)
+                            if qty_s > 0:
+                                turnover_s = qty_s * buy_price_s
+                                fee_s = delivery_charges_v2(turnover_s, "BUY", charges)
+                                if cash >= turnover_s + fee_s:
+                                    cash -= turnover_s + fee_s
+                                    _add_to_holding(position, qty_s, buy_price_s)
+                                    trades.append({
+                                        "date": str(day),
+                                        "time": scan_row_s["timestamp"].strftime("%H:%M"),
+                                        "symbol": symbol, "side": "BUY", "qty": int(qty_s),
+                                        "price": round(buy_price_s, 2), "turnover": round(turnover_s, 2),
+                                        "charges": round(fee_s, 2), "cash_after": round(cash, 2),
+                                        "reason": "staged_entry_2nd_tranche",
+                                    })
+                # Always clear staged_pending after the day (whether or not we could add)
+                position["staged_pending"] = False
+
+            _active_pyrlvl = _eff_pyrlvl if _eff_pyrlvl is not None else strategy.pyramid_levels
+            if position["pyramid_adds_hit"] >= len(_active_pyrlvl):
                 continue
             symbol_day = day_prices[day_prices["symbol"] == symbol]
             if symbol_day.empty:
@@ -422,15 +926,17 @@ def run_backtest_v2(
             current_price = float(scan_row["close"])
             basis = position["avg_price"] if strategy.pyramid_basis == "avg" else position["entry_price"]
             level_idx = position["pyramid_adds_hit"]
-            drop_pct, alloc_param = strategy.pyramid_levels[level_idx]
-            if strategy.pyramid_volume_filter and strategy.volume_spike_min is not None:
+            drop_pct, alloc_param = _active_pyrlvl[level_idx]
+            if strategy.pyramid_volume_filter and _eff_vol is not None:
                 vol = scan_row.get("scan_volume")
                 vol_avg = scan_row.get("scan_volume_avg20")
-                if vol is None or vol_avg is None or pd.isna(vol_avg) or vol < strategy.volume_spike_min * vol_avg:
+                if vol is None or vol_avg is None or pd.isna(vol_avg) or vol < _eff_vol * vol_avg:
                     continue
             trigger = basis * (1 + drop_pct)
+            # Take the add only if drop is realized and we still have capital
             if current_price > trigger:
                 continue
+            # Resolve pyramid allocation: in fixed mode alloc_param is rupees; in pct_cash/pct_equity it is a fraction.
             if strategy.allocation_mode == "pct_cash":
                 alloc = max(cash * alloc_param, 0.0)
             elif strategy.allocation_mode == "pct_equity":
@@ -461,132 +967,248 @@ def run_backtest_v2(
                 "reason": f"pyramid_{strategy.pyramid_basis}_{drop_pct:+.0%}_lvl{level_idx + 1}",
             })
 
-        # ---- New entry pass ----
+        # ---- New entry pass (iterates over each configured scan window) ----
         regime_pass = True
         if strategy.regime_filter and regime_ok_by_date is not None:
             regime_pass = bool(regime_ok_by_date.get(day, False))
+        # NIFTY momentum gate: block new entries when index is in rapid correction.
+        if regime_pass and strategy.nifty_momentum_filter is not None:
+            nifty_ret_today = nifty_momentum_by_date.get(day, None)
+            if nifty_ret_today is not None and not pd.isna(nifty_ret_today):
+                if nifty_ret_today < strategy.nifty_momentum_filter:
+                    regime_pass = False
 
         if regime_pass:
-            candidates = None
+            # Iterate over each scan window (e.g. 11:00 and 14:00 for dual-scan strategies).
+            # Trigger mode ignores scan_times and runs once (the intraday candle walk is its own loop).
+            _scan_windows = _effective_scan_times if strategy.entry_mode == "scan" else (_primary_scan_time,)
 
-            if strategy.entry_mode == "scan":
-                scan_rows = (
-                    day_prices[day_prices["time"] <= strategy.scan_time]
-                    .sort_values("timestamp")
-                    .groupby("symbol", as_index=False)
-                    .tail(1)
-                )
-                if not scan_rows.empty:
-                    if strategy.entry_lookback_days <= 1:
-                        scan_rows = scan_rows.dropna(subset=["prev_close"]).copy()
-                        scan_rows["change"] = scan_rows["close"] / scan_rows["prev_close"] - 1
-                    else:
-                        col = f"close_{strategy.entry_lookback_days}d_ago"
-                        if col not in scan_rows.columns:
-                            scan_rows = scan_rows.copy()
-                            scan_rows["change"] = np.nan
+            for _scan_t in _scan_windows:
+                _vol_key = _scan_t.replace(":", "")
+                _vol_col = "scan_volume" if _scan_t == _primary_scan_time else f"scan_volume_{_vol_key}"
+                _vol_avg_col = "scan_volume_avg20" if _scan_t == _primary_scan_time else f"scan_volume_avg20_{_vol_key}"
+
+                candidates = None
+
+                if strategy.entry_mode == "scan":
+                    scan_rows = (
+                        day_prices[day_prices["time"] <= _scan_t]
+                        .sort_values("timestamp")
+                        .groupby("symbol", as_index=False)
+                        .tail(1)
+                    )
+                    if not scan_rows.empty:
+                        if strategy.entry_lookback_days <= 1:
+                            scan_rows = scan_rows.dropna(subset=["prev_close"]).copy()
+                            scan_rows["change"] = scan_rows["close"] / scan_rows["prev_close"] - 1
                         else:
-                            scan_rows = scan_rows.dropna(subset=[col]).copy()
-                            scan_rows["change"] = scan_rows["close"] / scan_rows[col] - 1
+                            col = f"close_{strategy.entry_lookback_days}d_ago"
+                            if col not in scan_rows.columns:
+                                scan_rows = scan_rows.copy()
+                                scan_rows["change"] = np.nan
+                            else:
+                                scan_rows = scan_rows.dropna(subset=[col]).copy()
+                                scan_rows["change"] = scan_rows["close"] / scan_rows[col] - 1
 
-                    candidates = scan_rows[scan_rows["change"] <= strategy.fall_threshold]
-                    if strategy.volume_spike_min is not None:
+                        candidates = scan_rows[scan_rows["change"] <= _eff_fall].copy()
+                        if _eff_vol is not None and _vol_avg_col in candidates.columns:
+                            candidates = candidates[
+                                candidates[_vol_col]
+                                >= _eff_vol * candidates[_vol_avg_col]
+                            ]
+
+                elif strategy.entry_mode == "trigger":
+                    # Walk intraday candles within trigger_window; first cross per (symbol, date) wins.
+                    t_lo, t_hi = strategy.trigger_window
+                    window_rows = day_prices[
+                        (day_prices["time"] >= t_lo) & (day_prices["time"] <= t_hi)
+                    ].copy()
+                    if not window_rows.empty:
+                        window_rows = window_rows.dropna(subset=["prev_close"])
+                        if strategy.entry_lookback_days <= 1:
+                            window_rows["change"] = window_rows["close"] / window_rows["prev_close"] - 1
+                        else:
+                            col = f"close_{strategy.entry_lookback_days}d_ago"
+                            if col in window_rows.columns:
+                                window_rows = window_rows.dropna(subset=[col])
+                                window_rows["change"] = window_rows["close"] / window_rows[col] - 1
+                            else:
+                                window_rows["change"] = np.nan
+                        triggers = window_rows[window_rows["change"] <= _eff_fall]
+                        triggers = triggers.sort_values("timestamp")
+                        candidates = triggers.groupby("symbol", as_index=False).head(1)
+
+                        if not candidates.empty and strategy.trigger_require_green_candle:
+                            candidates = candidates[candidates["close"] >= candidates["open"]]
+
+                        if not candidates.empty and strategy.trigger_persistence_candles > 0:
+                            n = strategy.trigger_persistence_candles
+                            thr = strategy.trigger_persistence_threshold
+                            kept_indices = []
+                            for cand_idx, cand in candidates.iterrows():
+                                sym_after = day_prices[
+                                    (day_prices["symbol"] == cand["symbol"])
+                                    & (day_prices["timestamp"] > cand["timestamp"])
+                                ].sort_values("timestamp").head(n)
+                                if len(sym_after) < n:
+                                    continue
+                                prev_close_s = sym_after["prev_close"]
+                                if prev_close_s.isna().any():
+                                    continue
+                                after_change = sym_after["close"] / prev_close_s - 1
+                                if (after_change <= thr).all():
+                                    kept_indices.append(cand_idx)
+                            candidates = candidates.loc[kept_indices]
+
+                if candidates is not None and not candidates.empty:
+                    if strategy.rsi_max is not None:
+                        candidates = candidates[candidates["rsi14"] < strategy.rsi_max]
+                    if strategy.entry_signal == "drop_and_bollinger":
+                        candidates = candidates.dropna(subset=["bb_lower20"])
+                        candidates = candidates[candidates["close"] <= candidates["bb_lower20"]]
+                    if strategy.entry_below_ma20:
+                        candidates = candidates.dropna(subset=["bb_mid20"])
+                        candidates = candidates[candidates["close"] <= candidates["bb_mid20"]]
+                    if strategy.low_proximity_max is not None:
+                        candidates = candidates.dropna(subset=["low_90d"])
                         candidates = candidates[
-                            candidates["scan_volume"]
-                            >= strategy.volume_spike_min * candidates["scan_volume_avg20"]
+                            (candidates["close"] - candidates["low_90d"]) / candidates["low_90d"]
+                            <= strategy.low_proximity_max
+                        ]
+                    if strategy.entry_below_high_pct is not None:
+                        candidates = candidates.dropna(subset=["high_90d"])
+                        candidates = candidates[
+                            candidates["close"] <= candidates["high_90d"] * (1.0 - strategy.entry_below_high_pct)
+                        ]
+                    if strategy.sma_above is not None:
+                        _sma_col = "sma10" if strategy.sma_above == 10 else ("sma50" if strategy.sma_above == 50 else "bb_mid20")
+                        candidates = candidates.dropna(subset=[_sma_col])
+                        candidates = candidates[candidates["close"] >= candidates[_sma_col]]
+                    # SMA-prev filter — multi-regime path uses _eff_sma_p directly; legacy path
+                    # uses strategy.sma_above_prev + sma_above_prev_in_bear gating.
+                    _active_sma_p = _eff_sma_p if _use_multiregime else strategy.sma_above_prev
+                    if _active_sma_p is not None:
+                        _apply_sma_prev = True
+                        if not _use_multiregime and strategy.sma_above_prev_in_bear and bear_market_by_date is not None:
+                            _nifty_bullish = bool(bear_market_by_date.get(day, True))
+                            _apply_sma_prev = not _nifty_bullish  # legacy: only in bear
+                        if _apply_sma_prev:
+                            _sma_col = "sma10" if _active_sma_p == 10 else ("sma50" if _active_sma_p == 50 else "bb_mid20")
+                            candidates = candidates.dropna(subset=[_sma_col, "prev_close"])
+                            candidates = candidates[candidates["prev_close"] >= candidates[_sma_col]]
+                    # MACD filter — multi-regime path uses _eff_macd directly; legacy path uses
+                    # strategy.macd_filter + macd_filter_in_bear_market gating.
+                    _active_macd = _eff_macd if _use_multiregime else strategy.macd_filter
+                    if _active_macd is not None:
+                        _apply_macd = True
+                        if not _use_multiregime and strategy.macd_filter_in_bear_market and bear_market_by_date is not None:
+                            nifty_bullish = bool(bear_market_by_date.get(day, True))
+                            _apply_macd = not nifty_bullish  # legacy: only in bear
+                        if _apply_macd:
+                            if _active_macd == "positive":
+                                candidates = candidates.dropna(subset=["macd_hist"])
+                                candidates = candidates[candidates["macd_hist"] > 0]
+                            elif _active_macd == "rising":
+                                candidates = candidates.dropna(subset=["macd_hist", "macd_hist_3d_ago"])
+                                candidates = candidates[candidates["macd_hist"] > candidates["macd_hist_3d_ago"]]
+                    if strategy.macd_recent_crossover:
+                        candidates = candidates.dropna(subset=["macd_hist", "macd_hist_20d_ago"])
+                        candidates = candidates[
+                            (candidates["macd_hist"] > 0) & (candidates["macd_hist_20d_ago"] < 0)
                         ]
 
-            elif strategy.entry_mode == "trigger":
-                t_lo, t_hi = strategy.trigger_window
-                window_rows = day_prices[
-                    (day_prices["time"] >= t_lo) & (day_prices["time"] <= t_hi)
-                ].copy()
-                if not window_rows.empty:
-                    window_rows = window_rows.dropna(subset=["prev_close"])
-                    if strategy.entry_lookback_days <= 1:
-                        window_rows["change"] = window_rows["close"] / window_rows["prev_close"] - 1
-                    else:
-                        col = f"close_{strategy.entry_lookback_days}d_ago"
-                        if col in window_rows.columns:
-                            window_rows = window_rows.dropna(subset=[col])
-                            window_rows["change"] = window_rows["close"] / window_rows[col] - 1
+                    # Sort by largest drop first — biggest intraday capitulation = highest-priority entry.
+                    # Already the implicit behavior (sort ascending on change), but made explicit here.
+                    candidates = candidates.sort_values("change")
+                    if _eff_maxbuys is not None:
+                        candidates = candidates.head(_eff_maxbuys)
+
+                    # Pre-compute scan_time closing prices for displacement sell reference
+                    scan_closes_for_day = (
+                        day_prices[day_prices["time"] <= _scan_t]
+                        .sort_values("timestamp")
+                        .groupby("symbol")["close"]
+                        .last()
+                    )
+
+                    # Mark equity for sizing
+                    marks_today = day_prices.sort_values("timestamp").groupby("symbol").tail(1).set_index("symbol")["close"]
+                    holdings_value = sum(pos["qty"] * marks_today.get(s, pos["avg_price"]) for s, pos in holdings.items())
+                    current_equity = cash + holdings_value
+
+                    for _, row in candidates.iterrows():
+                        symbol = row["symbol"]
+                        if symbol in holdings:
+                            continue
+                        buy_price = float(row["close"]) * (1 + strategy.slippage_rate)
+                        if strategy.allocation_mode == "pct_equity":
+                            alloc = current_equity * _eff_alloc
+                        elif strategy.allocation_mode == "pct_cash":
+                            alloc = max(cash * _eff_alloc, 0.0)
                         else:
-                            window_rows["change"] = np.nan
-                    triggers = window_rows[window_rows["change"] <= strategy.fall_threshold]
-                    triggers = triggers.sort_values("timestamp")
-                    candidates = triggers.groupby("symbol", as_index=False).head(1)
+                            alloc = strategy.allocation_per_trade
+                        if strategy.staged_entry:
+                            qty = int((alloc / 2) // buy_price)
+                        else:
+                            qty = int(alloc // buy_price)
+                        if qty <= 0:
+                            continue
+                        turnover = qty * buy_price
+                        fee = delivery_charges_v2(turnover, "BUY", charges)
 
-                    if not candidates.empty and strategy.trigger_require_green_candle:
-                        candidates = candidates[candidates["close"] >= candidates["open"]]
+                        # Position displacement: sell a holding to fund an extreme-drop entry.
+                        # Only fires when (a) cash is short, (b) displace_threshold is set,
+                        # (c) this candidate's drop exceeds the threshold, and (d) we have holdings.
+                        if (cash < turnover + fee
+                                and strategy.displace_threshold is not None
+                                and float(row["change"]) <= strategy.displace_threshold
+                                and holdings):
+                            # Choose the holding to sell
+                            if strategy.displace_sell_rule == "oldest":
+                                sell_sym = min(holdings, key=lambda s: holdings[s]["entry_date"])
+                            else:  # "smallest_gain" — sell position with smallest unrealized profit
+                                sell_sym = min(
+                                    holdings,
+                                    key=lambda s: scan_closes_for_day.get(s, holdings[s]["avg_price"]) / holdings[s]["avg_price"],
+                                )
+                            # Execute the displacement sell at scan-time close
+                            disp_holding = holdings[sell_sym]
+                            disp_close = float(scan_closes_for_day.get(sell_sym, disp_holding["avg_price"]))
+                            disp_sell_price = disp_close * (1 - strategy.slippage_rate)
+                            disp_qty = disp_holding["qty"]
+                            disp_turnover = disp_qty * disp_sell_price
+                            disp_fee = delivery_charges_v2(disp_turnover, "SELL", charges)
+                            cash += disp_turnover - disp_fee
+                            trades.append({
+                                "date": str(day),
+                                "time": _scan_t,
+                                "symbol": sell_sym, "side": "SELL", "qty": int(disp_qty),
+                                "price": round(disp_sell_price, 2), "turnover": round(disp_turnover, 2),
+                                "charges": round(disp_fee, 2), "cash_after": round(cash, 2),
+                                "reason": f"displace_for_{symbol}_{float(row['change']):+.0%}",
+                            })
+                            del holdings[sell_sym]
+                            # Recompute equity after the displacement sell
+                            holdings_value = sum(pos["qty"] * marks_today.get(s, pos["avg_price"]) for s, pos in holdings.items())
+                            current_equity = cash + holdings_value
 
-                    if not candidates.empty and strategy.trigger_persistence_candles > 0:
-                        n = strategy.trigger_persistence_candles
-                        thr = strategy.trigger_persistence_threshold
-                        kept_indices = []
-                        for cand_idx, cand in candidates.iterrows():
-                            sym_after = day_prices[
-                                (day_prices["symbol"] == cand["symbol"])
-                                & (day_prices["timestamp"] > cand["timestamp"])
-                            ].sort_values("timestamp").head(n)
-                            if len(sym_after) < n:
-                                continue
-                            prev_close = sym_after["prev_close"]
-                            if prev_close.isna().any():
-                                continue
-                            after_change = sym_after["close"] / prev_close - 1
-                            if (after_change <= thr).all():
-                                kept_indices.append(cand_idx)
-                        candidates = candidates.loc[kept_indices]
-
-            if candidates is not None and not candidates.empty:
-                if strategy.rsi_max is not None:
-                    candidates = candidates[candidates["rsi14"] < strategy.rsi_max]
-                if strategy.entry_signal == "drop_and_bollinger":
-                    candidates = candidates.dropna(subset=["bb_lower20"])
-                    candidates = candidates[candidates["close"] <= candidates["bb_lower20"]]
-                if strategy.low_proximity_max is not None:
-                    candidates = candidates.dropna(subset=["low_90d"])
-                    candidates = candidates[
-                        (candidates["close"] - candidates["low_90d"]) / candidates["low_90d"]
-                        <= strategy.low_proximity_max
-                    ]
-                candidates = candidates.sort_values("change")
-                if strategy.max_new_buys_per_day is not None:
-                    candidates = candidates.head(strategy.max_new_buys_per_day)
-
-                marks_today = day_prices.sort_values("timestamp").groupby("symbol").tail(1).set_index("symbol")["close"]
-                holdings_value = sum(pos["qty"] * marks_today.get(s, pos["avg_price"]) for s, pos in holdings.items())
-                current_equity = cash + holdings_value
-
-                for _, row in candidates.iterrows():
-                    symbol = row["symbol"]
-                    if symbol in holdings:
-                        continue
-                    buy_price = float(row["close"]) * (1 + strategy.slippage_rate)
-                    if strategy.allocation_mode == "pct_equity":
-                        alloc = current_equity * strategy.allocation_pct
-                    elif strategy.allocation_mode == "pct_cash":
-                        alloc = max(cash * strategy.allocation_pct, 0.0)
-                    else:
-                        alloc = strategy.allocation_per_trade
-                    qty = int(alloc // buy_price)
-                    if qty <= 0:
-                        continue
-                    turnover = qty * buy_price
-                    fee = delivery_charges_v2(turnover, "BUY", charges)
-                    if cash < turnover + fee:
-                        continue
-                    cash -= turnover + fee
-                    entry_atr = row.get("atr14") if hasattr(row, "get") else row["atr14"]
-                    holdings[symbol] = _new_holding(qty, buy_price, day, entry_atr)
-                    trades.append({
-                        "date": str(day),
-                        "time": row["timestamp"].strftime("%H:%M"),
-                        "symbol": symbol, "side": "BUY", "qty": int(qty),
-                        "price": round(buy_price, 2), "turnover": round(turnover, 2),
-                        "charges": round(fee, 2), "cash_after": round(cash, 2),
-                        "reason": f"entry_{strategy.entry_mode}_drop_{strategy.fall_threshold:+.0%}",
-                    })
+                        if cash < turnover + fee:
+                            continue
+                        cash -= turnover + fee
+                        entry_atr = row.get("atr14") if hasattr(row, "get") else row["atr14"]
+                        holdings[symbol] = _new_holding(
+                            qty, buy_price, day, entry_atr,
+                            staged_pending=strategy.staged_entry,
+                            staged_remaining_alloc=(alloc / 2) if strategy.staged_entry else 0.0,
+                        )
+                        trades.append({
+                            "date": str(day),
+                            "time": row["timestamp"].strftime("%H:%M"),
+                            "symbol": symbol, "side": "BUY", "qty": int(qty),
+                            "price": round(buy_price, 2), "turnover": round(turnover, 2),
+                            "charges": round(fee, 2), "cash_after": round(cash, 2),
+                            "reason": f"entry_{strategy.entry_mode}_{_scan_t}_drop_{strategy.fall_threshold:+.0%}",
+                        })
 
         # ---- Mark equity ----
         marks = day_prices.sort_values("timestamp").groupby("symbol").tail(1).set_index("symbol")["close"]
@@ -604,6 +1226,7 @@ def run_backtest_v2(
     buys = sum(1 for t in trades if t["side"] == "BUY")
     sells = sum(1 for t in trades if t["side"] == "SELL")
 
+    # Max drawdown on the equity curve
     equity_series = pd.Series([row["equity"] for row in equity_curve], dtype=float)
     if not equity_series.empty:
         peak = equity_series.cummax()

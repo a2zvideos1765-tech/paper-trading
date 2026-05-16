@@ -320,14 +320,21 @@ async def replay_one_portfolio(
     charges: ChargeConfigV2,
     nifty_close: pd.Series,
     sensex_close: pd.Series,
+    vix_close: pd.Series | None = None,
 ) -> dict:
     """Run the engine for this portfolio against the given candles window.
-    Returns the engine's full result dict and persists trades / positions / equity."""
+    Returns the engine's full result dict and persists trades / positions / equity.
+
+    `vix_close` is the INDIA_VIX daily-close series — required by multi-regime
+    strategies (S228/S283) for the VIX-fear regime override; harmless if absent.
+    """
     clear_regime_cache()
     if not nifty_close.empty:
         prime_regime_index("NIFTY_50", nifty_close)
     if not sensex_close.empty:
         prime_regime_index("SENSEX", sensex_close)
+    if vix_close is not None and not vix_close.empty:
+        prime_regime_index("INDIA_VIX", vix_close)
 
     # Apply per-portfolio strategy overrides (set by the user from the dashboard).
     # If validation fails, skip this portfolio's tick — never silently corrupt state.

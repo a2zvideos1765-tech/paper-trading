@@ -189,14 +189,14 @@ def validate(strategy: StrategyV2) -> dict[str, str]:
                 errs["exit_tiers"] = "final tier's fraction must be 1.0 to fully exit"
 
     # allocation_mode rules
-    if strategy.allocation_mode == "pct_equity":
+    if strategy.allocation_mode in ("pct_equity", "pct_cash"):
         if not (0 < strategy.allocation_pct <= 1):
-            errs["allocation_pct"] = "must be in (0, 1] when allocation_mode='pct_equity'"
+            errs["allocation_pct"] = f"must be in (0, 1] when allocation_mode='{strategy.allocation_mode}'"
     elif strategy.allocation_mode == "fixed":
         if strategy.allocation_per_trade <= 0:
             errs["allocation_per_trade"] = "must be > 0 when allocation_mode='fixed'"
     else:
-        errs["allocation_mode"] = "must be 'fixed' or 'pct_equity'"
+        errs["allocation_mode"] = "must be 'fixed', 'pct_equity' or 'pct_cash'"
 
     # trailing stop: both must be set if either is
     a, d = strategy.trail_activate_pct, strategy.trail_drawdown_pct
@@ -215,6 +215,44 @@ def validate(strategy: StrategyV2) -> dict[str, str]:
     # time_stop_days ≥ 1
     if strategy.time_stop_days is not None and strategy.time_stop_days < 1:
         errs["time_stop_days"] = "must be ≥ 1"
+
+    # macd_filter must be a known mode
+    if strategy.macd_filter is not None and strategy.macd_filter not in {"positive", "rising"}:
+        errs["macd_filter"] = "must be 'positive' or 'rising'"
+
+    # macd_recent_crossover requires macd_filter='positive'
+    if strategy.macd_recent_crossover and strategy.macd_filter != "positive":
+        errs["macd_recent_crossover"] = "requires macd_filter='positive'"
+
+    # vix_bear_threshold must be positive when set
+    if strategy.vix_bear_threshold is not None and strategy.vix_bear_threshold <= 0:
+        errs["vix_bear_threshold"] = "must be > 0"
+
+    # regime_dma_period sane lower bound
+    if strategy.regime_dma_period < 20:
+        errs["regime_dma_period"] = "must be ≥ 20"
+
+    # sma_above / sma_above_prev only support 10 or 20
+    for fld in ("sma_above", "sma_above_prev"):
+        v = getattr(strategy, fld)
+        if v is not None and v not in (10, 20):
+            errs[fld] = "only 10 or 20 are supported"
+
+    # exit_tiers_bear, when set, follows the same rules as exit_tiers
+    if strategy.exit_tiers_bear:
+        last_t = -float("inf")
+        for i, pair in enumerate(strategy.exit_tiers_bear):
+            target, frac = pair
+            if target <= last_t:
+                errs[f"exit_tiers_bear[{i}]"] = "target_pct must be strictly increasing"
+                break
+            if not (0 < frac <= 1):
+                errs[f"exit_tiers_bear[{i}]"] = "fraction_to_sell must be in (0, 1]"
+                break
+            last_t = target
+        else:
+            if abs(strategy.exit_tiers_bear[-1][1] - 1.0) > 1e-9:
+                errs["exit_tiers_bear"] = "final tier's fraction must be 1.0 to fully exit"
 
     return errs
 
