@@ -1,4 +1,4 @@
-# Paper Trading
+# Paper Trading 2.0
 
 Live paper-trading rig for the strategies developed in the companion
 [backtester project](../i-want-to-build-an-algo). Runs multiple strategies in
