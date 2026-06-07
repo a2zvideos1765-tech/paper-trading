@@ -238,6 +238,16 @@ def validate(strategy: StrategyV2) -> dict[str, str]:
         if v is not None and v not in (10, 20):
             errs[fld] = "only 10 or 20 are supported"
 
+    # vix_blend clamps must be ordered lo ≤ hi, and both positive
+    if strategy.vix_blend_clamp_lo > strategy.vix_blend_clamp_hi:
+        errs["vix_blend_clamp_lo"] = "must be ≤ vix_blend_clamp_hi"
+    if strategy.vix_blend_clamp_lo <= 0:
+        errs["vix_blend_clamp_lo"] = "must be > 0"
+
+    # mean-reversion half-life: fast bound must be ≤ slow bound
+    if strategy.mr_halflife_fast_days > strategy.mr_halflife_slow_days:
+        errs["mr_halflife_fast_days"] = "must be ≤ mr_halflife_slow_days"
+
     # exit_tiers_bear, when set, follows the same rules as exit_tiers
     if strategy.exit_tiers_bear:
         last_t = -float("inf")

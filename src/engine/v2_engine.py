@@ -6,12 +6,13 @@ sections that read market data from CSV files on disk. The live trader has no
 such files — it primes in-memory caches from the DB before each replay.
 
 If you update upstream engine_v2.py, re-vendor by copying it here and re-applying
-every block marked `# === paper-trading patch ===`. There are four:
+every block marked `# === paper-trading patch ===`. There are five:
   1. regime-index cache + prime_* helpers (NIFTY_50 / SENSEX / INDIA_VIX)
   2. the ATR(14) pandas>=2.2 transform fix in daily_features
   3. _load_regime_index / _load_nifty_extended_close — read from the cache
-  4. classify_regime_by_date — read India VIX from the cache
-Then run `pytest tests/test_parity.py` before deploying.
+  4. classify_regime_by_date — read NIFTY + India VIX from the cache
+  5. _load_vix_by_date — read India VIX from the cache (vix_blend strategies)
+Then run `pytest tests/test_strategies.py` before deploying.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import pandas as pd
 # (see src/engine/replay.py). Tests prime them directly.
 _REGIME_INDEX_CACHE: dict[str, pd.Series] = {}   # name -> daily-close series, indexed by date
 _REGIME_CACHE: dict[str, pd.Series] = {}          # classify_regime_by_date memo, keyed by params
+_VIX_SERIES_CACHE: dict | None = None             # _load_vix_by_date memo (date -> float)
 
 
 def prime_regime_index(name: str, daily_close: pd.Series) -> None:
@@ -38,10 +40,12 @@ def prime_regime_index(name: str, daily_close: pd.Series) -> None:
 
 
 def clear_regime_cache() -> None:
-    """Drop both caches. The trader calls this at the start of every replay so
-    a stale index series can never leak across portfolios/ticks."""
+    """Drop all regime caches. The trader calls this at the start of every replay
+    so a stale index series can never leak across portfolios/ticks."""
+    global _VIX_SERIES_CACHE
     _REGIME_INDEX_CACHE.clear()
     _REGIME_CACHE.clear()
+    _VIX_SERIES_CACHE = None
 # === end patch ======================================================
 
 
@@ -54,7 +58,8 @@ class ModeParams:
 
     Supported overrideable fields:
       fall_threshold, allocation_pct, exit_tiers, volume_spike_min,
-      macd_filter, sma_above_prev, pyramid_levels, max_new_buys_per_day.
+      macd_filter, sma_above_prev, pyramid_levels, max_new_buys_per_day,
+      adaptive_exit_by_depth.
     """
     fall_threshold:      float | None = None
     allocation_pct:      float | None = None
@@ -64,6 +69,9 @@ class ModeParams:
     sma_above_prev:      int   | None = None   # 10, 20, 50 | "__off__" (use -1)
     pyramid_levels:      tuple[tuple[float, float], ...] | None = None
     max_new_buys_per_day: int  | None = None
+    # Per-regime adaptive exit ladder — overrides strategy.adaptive_exit_by_depth when set.
+    # Same format: ((min_depth_pct, ((sell_pct, frac), ...)), ...).
+    adaptive_exit_by_depth: tuple[tuple[float, tuple[tuple[float, float], ...]], ...] | None = None
 
 
 def _meff(mode: "ModeParams | None", field: str, base):
@@ -100,6 +108,15 @@ class StrategyV2:
     # Uses the same regime_source and regime_dma_period as MACD/SMA bear-market gates.
     # Has no effect unless regime_source is set (or the strategy uses macd_filter_in_bear_market).
     exit_tiers_bear: tuple[tuple[float, float], ...] | None = None
+
+    # Adaptive exits: per-position exit tiers chosen by the stock's depth-below-90d-high
+    # at first entry. Ordered (min_depth_pct, tiers) buckets ascending — the LAST bucket
+    # whose min_depth_pct ≤ entry_depth_pct is selected. Snapshot at entry, then locked
+    # (pyramid adds do NOT re-snapshot). Overrides exit_tiers / exit_tiers_bear / mode tiers.
+    # Rationale: in our universe a -3% drop on a shallow pullback gives a ~12% bounce, while
+    # a -3% drop on a stock already 20% below its 90d high gives a 25%+ V-recovery. One
+    # universal exit ladder can't capture both — adaptive tiers route width by depth.
+    adaptive_exit_by_depth: tuple[tuple[float, tuple[tuple[float, float], ...]], ...] | None = None
 
     # Stops
     hard_stop_pct: float | None = None  # e.g. -0.30 from avg_price → close entire position
@@ -246,6 +263,27 @@ class StrategyV2:
     mode_params_sideways: ModeParams | None = None
     vix_bear_threshold:   float | None = 20.0   # None → VIX not used
     vix_only_bear:        bool = False          # True → bear only via VIX (no DMA-based bear)
+
+    # Round 46 — VIX-blended adaptive exits.
+    # When enabled, each selected adaptive tier's profit threshold is multiplied by a factor
+    # derived from today's India VIX: factor = clamp(1 + (vix - baseline) * slope, lo, hi).
+    # High VIX → factor > 1 → wider exits (capitulation regimes reward holding longer).
+    # Low VIX → factor < 1 → tighter exits (compressed-vol regimes, smaller bounces).
+    # Has no effect when adaptive_exit_by_depth is None (ignored for non-adaptive strategies).
+    vix_blend_enabled:  bool  = False
+    vix_blend_baseline: float = 15.0       # neutral VIX level (factor = 1.0 here)
+    vix_blend_slope:    float = 1.0 / 50.0 # scaling per VIX point above baseline (0.02 = 2pp/pt)
+    vix_blend_clamp_lo: float = 0.75       # minimum factor
+    vix_blend_clamp_hi: float = 1.50       # maximum factor
+
+    # Round 47 — Per-symbol mean-reversion half-life allocation boost.
+    # When mr_halflife_alloc_boost is set, allocation is multiplied by a factor that
+    # linearly interpolates between boost (at halflife ≤ fast_days) and 1.0 (at ≥ slow_days).
+    # Symbols with short half-lives (fast reverters like liquid large-caps) get proportionally
+    # more capital. Has no effect when None (backward-compatible).
+    mr_halflife_alloc_boost: float | None = None   # e.g. 1.4 → up to 1.4× alloc on fastest reverters
+    mr_halflife_fast_days: float = 8.0             # ≤ this → full boost applied
+    mr_halflife_slow_days: float = 30.0            # ≥ this → 1.0× (no boost)
 
     # Misc
     scan_time: str = "11:00"
@@ -434,6 +472,23 @@ def daily_features(prices: pd.DataFrame, scan_time: str, extra_scan_times: tuple
             on=["symbol", "date"], how="left",
         )
 
+    # Mean-reversion half-life (60-day rolling AR(1) on daily returns).
+    # halflife = -ln(2) / ln(|phi|) where phi = lag-1 autocorrelation of daily returns.
+    # Faster-reverting stocks (small halflife) give sharper entry-to-recovery cycles.
+    # Used by mr_halflife_alloc_boost to bias allocation toward fast reverters.
+    def _halflife_series(s: pd.Series) -> pd.Series:
+        rets = s.pct_change()
+        def _hl(window):
+            if len(window) < 10:
+                return float("nan")
+            phi = window.autocorr(lag=1)
+            if phi is None or np.isnan(phi) or abs(phi) <= 0 or abs(phi) >= 1:
+                return float("nan")
+            return -np.log(2.0) / np.log(abs(phi))
+        return rets.rolling(60, min_periods=20).apply(_hl, raw=False)
+
+    daily_close["mr_halflife_60d"] = daily_close.groupby("symbol")["daily_close"].transform(_halflife_series)
+
     if _key is not None:
         if len(_FEATURES_CACHE) > 16:
             _FEATURES_CACHE.clear()
@@ -572,6 +627,7 @@ def _new_holding(
     entry_atr: float | None = None,
     staged_pending: bool = False,
     staged_remaining_alloc: float = 0.0,
+    entry_depth_pct: float | None = None,
 ) -> dict:
     return {
         "qty": float(qty),
@@ -583,15 +639,53 @@ def _new_holding(
         "tiers_hit": 0,
         "trail_armed": False,
         "entry_atr": float(entry_atr) if entry_atr is not None and not np.isnan(entry_atr) else None,
+        "entry_depth_pct": float(entry_depth_pct) if entry_depth_pct is not None and not np.isnan(entry_depth_pct) else None,
         "staged_pending": staged_pending,
         "staged_remaining_alloc": staged_remaining_alloc,
     }
+
+
+def _select_adaptive_tiers(depth_pct: float | None, buckets):
+    """Pick the LAST bucket whose min_depth ≤ depth_pct. Returns None if no match."""
+    if depth_pct is None or not buckets:
+        return None
+    chosen = None
+    for min_depth, tiers in buckets:
+        if depth_pct >= min_depth:
+            chosen = tiers
+        else:
+            break
+    return chosen
 
 
 def _add_to_holding(holding: dict, add_qty: float, add_price: float) -> None:
     total_qty = holding["qty"] + add_qty
     holding["avg_price"] = (holding["avg_price"] * holding["qty"] + add_price * add_qty) / total_qty
     holding["qty"] = total_qty
+
+
+# === paper-trading patch ============================================
+# Upstream read India VIX from INDIA_VIX_extended.csv. The trader primes the
+# DB's INDIA_VIX daily closes into _REGIME_INDEX_CACHE before each replay; build
+# the date→float map from there. Used only by vix_blend strategies (S404 does
+# not enable vix_blend, so this is a no-op for it, but kept correct for others).
+def _load_vix_by_date() -> dict:
+    """Return India VIX close keyed by Python date, from the primed cache.
+
+    Empty dict when INDIA_VIX hasn't been primed, so callers degrade gracefully.
+    """
+    global _VIX_SERIES_CACHE
+    if _VIX_SERIES_CACHE is not None:
+        return _VIX_SERIES_CACHE
+    vix = _REGIME_INDEX_CACHE.get("INDIA_VIX", pd.Series(dtype=float))
+    if vix.empty:
+        _VIX_SERIES_CACHE = {}
+        return {}
+    vix_close = vix.astype(float).sort_index().ffill()
+    result: dict = dict(zip(vix_close.index, vix_close.values))
+    _VIX_SERIES_CACHE = result
+    return result
+# === end patch ======================================================
 
 
 # ---------- Engine ----------
@@ -623,6 +717,7 @@ def run_backtest_v2(
         "low_90d", "high_90d",
         "macd_hist", "macd_hist_3d_ago", "macd_hist_20d_ago",
         "scan_volume", "scan_volume_avg20",
+        "mr_halflife_60d",  # rolling AR(1) half-life; used by mr_halflife_alloc_boost
     ]
     for _est in _extra_scan_times:
         _est_key = _est.replace(":", "")
@@ -713,6 +808,19 @@ def run_backtest_v2(
         if _eff_macd   == "__off__": _eff_macd   = None
         if _eff_sma_p  == -1:       _eff_sma_p  = None  # -1 used to turn off sma_above_prev
 
+        # ---- VIX blend factor for adaptive exits ----
+        # Computed once per day; applied to adaptive tier thresholds at point-of-use.
+        # factor = clamp(1 + (vix - baseline) * slope, lo, hi)
+        # Default 1.0 (no scaling) when vix_blend is off or VIX data unavailable.
+        _vix_factor: float = 1.0
+        if strategy.vix_blend_enabled and strategy.adaptive_exit_by_depth is not None:
+            if not hasattr(run_backtest_v2, "_vix_by_date_cache"):
+                run_backtest_v2._vix_by_date_cache = _load_vix_by_date()  # type: ignore[attr-defined]
+            _vix_today = run_backtest_v2._vix_by_date_cache.get(day)  # type: ignore[attr-defined]
+            if _vix_today is not None:
+                raw = 1.0 + (_vix_today - strategy.vix_blend_baseline) * strategy.vix_blend_slope
+                _vix_factor = max(strategy.vix_blend_clamp_lo, min(strategy.vix_blend_clamp_hi, raw))
+
         # ---- Exit pass: stops + tiered targets ----
         for symbol in list(holdings):
             position = holdings[symbol]
@@ -778,8 +886,28 @@ def run_backtest_v2(
                     continue
 
             # 3) Tiered profit exits — process tiers in order
-            # Priority: multi-regime _eff_exits > legacy exit_tiers_bear > base exit_tiers
-            if _day_mode is not None and _day_mode.exit_tiers is not None:
+            # Priority:
+            #   mode.adaptive_exit_by_depth (per-regime per-position)
+            #   > strategy.adaptive_exit_by_depth (global per-position)
+            #   > multi-regime _eff_exits
+            #   > legacy exit_tiers_bear
+            #   > base exit_tiers
+            _mode_adaptive_buckets = (
+                _day_mode.adaptive_exit_by_depth
+                if _day_mode is not None and _day_mode.adaptive_exit_by_depth is not None
+                else None
+            )
+            _adaptive_buckets = _mode_adaptive_buckets if _mode_adaptive_buckets is not None else strategy.adaptive_exit_by_depth
+            _adaptive = (
+                _select_adaptive_tiers(position.get("entry_depth_pct"), _adaptive_buckets)
+                if _adaptive_buckets is not None else None
+            )
+            if _adaptive is not None:
+                # Apply VIX blend factor: scale every tier threshold by _vix_factor.
+                if _vix_factor != 1.0:
+                    _adaptive = tuple((p * _vix_factor, f) for p, f in _adaptive)
+                tiers = _adaptive
+            elif _day_mode is not None and _day_mode.exit_tiers is not None:
                 tiers = _eff_exits
             elif strategy.exit_tiers_bear is not None and bear_market_by_date is not None:
                 _is_bear = not bool(bear_market_by_date.get(day, True))
@@ -854,7 +982,21 @@ def run_backtest_v2(
                         # Only fire if position hasn't exited yet (sold_full check is embedded via
                         # `symbol in holdings`) and hasn't reached next tier on this very day.
                         tier_idx = position["tiers_hit"]
-                        if strategy.exit_tiers_bear is not None and bear_market_by_date is not None:
+                        _mode_adaptive_buckets_p = (
+                            _day_mode.adaptive_exit_by_depth
+                            if _day_mode is not None and _day_mode.adaptive_exit_by_depth is not None
+                            else None
+                        )
+                        _adaptive_buckets_p = _mode_adaptive_buckets_p if _mode_adaptive_buckets_p is not None else strategy.adaptive_exit_by_depth
+                        _adaptive_p = (
+                            _select_adaptive_tiers(position.get("entry_depth_pct"), _adaptive_buckets_p)
+                            if _adaptive_buckets_p is not None else None
+                        )
+                        if _adaptive_p is not None:
+                            if _vix_factor != 1.0:
+                                _adaptive_p = tuple((p * _vix_factor, f) for p, f in _adaptive_p)
+                            tiers = _adaptive_p
+                        elif strategy.exit_tiers_bear is not None and bear_market_by_date is not None:
                             _is_bear_p = not bool(bear_market_by_date.get(day, True))
                             tiers = strategy.exit_tiers_bear if _is_bear_p else strategy.exit_tiers
                         else:
@@ -1147,6 +1289,21 @@ def run_backtest_v2(
                             alloc = max(cash * _eff_alloc, 0.0)
                         else:
                             alloc = strategy.allocation_per_trade
+                        # Mean-reversion half-life allocation boost.
+                        # Faster reverters (shorter halflife) get proportionally more capital.
+                        if strategy.mr_halflife_alloc_boost is not None:
+                            _hl = row.get("mr_halflife_60d") if hasattr(row, "get") else row["mr_halflife_60d"]
+                            if _hl is not None and not (isinstance(_hl, float) and np.isnan(_hl)) and _hl > 0:
+                                _fast = strategy.mr_halflife_fast_days
+                                _slow = strategy.mr_halflife_slow_days
+                                if _hl <= _fast:
+                                    _hl_mult = strategy.mr_halflife_alloc_boost
+                                elif _hl >= _slow:
+                                    _hl_mult = 1.0
+                                else:
+                                    _t = (_slow - _hl) / max(_slow - _fast, 1e-9)
+                                    _hl_mult = 1.0 + (_t * (strategy.mr_halflife_alloc_boost - 1.0))
+                                alloc *= _hl_mult
                         if strategy.staged_entry:
                             qty = int((alloc / 2) // buy_price)
                         else:
@@ -1196,10 +1353,16 @@ def run_backtest_v2(
                             continue
                         cash -= turnover + fee
                         entry_atr = row.get("atr14") if hasattr(row, "get") else row["atr14"]
+                        # Snapshot depth-below-90d-high for adaptive exits (locked at first entry).
+                        _high_90d = row.get("high_90d") if hasattr(row, "get") else row["high_90d"]
+                        _entry_depth = None
+                        if _high_90d is not None and not pd.isna(_high_90d) and _high_90d > 0:
+                            _entry_depth = (float(_high_90d) - buy_price) / float(_high_90d) * 100.0
                         holdings[symbol] = _new_holding(
                             qty, buy_price, day, entry_atr,
                             staged_pending=strategy.staged_entry,
                             staged_remaining_alloc=(alloc / 2) if strategy.staged_entry else 0.0,
+                            entry_depth_pct=_entry_depth,
                         )
                         trades.append({
                             "date": str(day),

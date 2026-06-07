@@ -1,10 +1,38 @@
 {% extends "base.html" %}
 {% block title %}Trades · Paper Trading{% endblock %}
 {% block content %}
-<header class="flex items-end justify-between mb-4">
+<header class="flex items-end justify-between mb-4 gap-4 flex-wrap">
   <h1 class="text-xl font-semibold text-default">All trades</h1>
-  <div class="text-xs text-muted">last {{ limit }}</div>
+  <div class="flex items-center gap-4">
+    {% if strategies %}
+    <div class="relative" id="export-menu">
+      <button id="export-btn" type="button"
+              class="text-xs btn-ghost px-3 py-1.5">⬇ Export by strategy ▾</button>
+      <div id="export-list"
+           class="hidden absolute right-0 mt-1 z-20 card-2 p-1 min-w-[18rem] max-h-72 overflow-y-auto shadow-lg">
+        {% for s in strategies %}
+        <a href="/strategy/{{ s.strategy_id }}/trades.csv" download
+           class="block px-3 py-1.5 text-xs rounded hover:bg-surface2 text-default flex items-center justify-between gap-3">
+          <span class="font-mono">{{ s.strategy_id }}</span>
+          <span class="text-muted">{{ s.trade_count }} trades · {{ s.portfolio_count }} pf</span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    <div class="text-xs text-muted">last {{ limit }}</div>
+  </div>
 </header>
+
+<script>
+(() => {
+  const btn = document.getElementById("export-btn");
+  const list = document.getElementById("export-list");
+  if (!btn || !list) return;
+  btn.addEventListener("click", (e) => { e.stopPropagation(); list.classList.toggle("hidden"); });
+  document.addEventListener("click", () => list.classList.add("hidden"));
+})();
+</script>
 
 <section class="card-2 overflow-hidden">
   <div class="overflow-x-auto">
@@ -27,7 +55,7 @@
           <td class="px-4 py-2 font-mono text-xs">
             <a href="/diagnose/{{ t.portfolio_id }}/{{ t.symbol }}/{{ t.ts.isoformat() }}"
                class="text-default hover:text-accent">
-              {{ t.ts.strftime("%Y-%m-%d %H:%M") }}
+              {{ t.ts | ist }}
             </a>
           </td>
           <td class="px-4 py-2"><a href="/portfolio/{{ t.portfolio_id }}" class="text-default hover:text-accent">{{ t.portfolio_name }}</a></td>

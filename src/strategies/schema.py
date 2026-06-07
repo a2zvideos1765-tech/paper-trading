@@ -3,9 +3,11 @@
 Each StrategyV2 field is categorized by `kind`, which the UI uses to pick an input
 widget and which the trader uses to coerce JSONB → tuple/None/etc.
 
-Two fields are intentionally NOT editable from the dashboard:
+Some fields are intentionally NOT editable from the dashboard (see PROTECTED_FIELDS):
 - `name` — identifier; changing it would orphan the registry lookup
 - `starting_cash` — managed by the trader (bound to portfolio.capital)
+- `scan_times`, `mode_params_*`, `adaptive_exit_by_depth` — variable-length /
+  nested structures with no flat editor widget; configured in strategy files only
 """
 
 from __future__ import annotations
@@ -221,6 +223,40 @@ FIELD_SCHEMA: dict[str, dict[str, Any]] = {
         "kind": "str", "options": ["smallest_gain", "oldest"], "group": "Sizing",
         "doc": "Which holding to sell when displacement fires: 'smallest_gain' or 'oldest'.",
     },
+    "mr_halflife_alloc_boost": {
+        "kind": "optional_float", "group": "Sizing",
+        "doc": "Optional: boost allocation for fast mean-reverters (e.g. 1.4 = up to 1.4× on the fastest). None = off.",
+    },
+    "mr_halflife_fast_days": {
+        "kind": "float", "group": "Sizing",
+        "doc": "Half-life (days) at or below which the full mr_halflife_alloc_boost is applied.",
+    },
+    "mr_halflife_slow_days": {
+        "kind": "float", "group": "Sizing",
+        "doc": "Half-life (days) at or above which no boost is applied (factor = 1.0).",
+    },
+
+    # Adaptive exits / VIX blend
+    "vix_blend_enabled": {
+        "kind": "bool", "group": "Adaptive",
+        "doc": "If true, scale adaptive exit thresholds by an India-VIX factor. Needs adaptive_exit_by_depth set.",
+    },
+    "vix_blend_baseline": {
+        "kind": "float", "group": "Adaptive",
+        "doc": "Neutral VIX level where the blend factor = 1.0 (e.g. 15.0).",
+    },
+    "vix_blend_slope": {
+        "kind": "float", "group": "Adaptive",
+        "doc": "Factor change per VIX point above baseline (e.g. 0.02 = +2% width per point).",
+    },
+    "vix_blend_clamp_lo": {
+        "kind": "float", "group": "Adaptive",
+        "doc": "Lower clamp on the VIX blend factor (e.g. 0.75).",
+    },
+    "vix_blend_clamp_hi": {
+        "kind": "float", "group": "Adaptive",
+        "doc": "Upper clamp on the VIX blend factor (e.g. 1.50).",
+    },
 }
 
 # Fields the UI must NOT show / overrides table must NOT touch.
@@ -230,6 +266,9 @@ FIELD_SCHEMA: dict[str, dict[str, Any]] = {
 PROTECTED_FIELDS = {
     "name", "starting_cash", "scan_times",
     "mode_params_bull", "mode_params_bear", "mode_params_sideways",
+    # Variable-length nested ladder ((min_depth, ((sell_pct, frac), ...)), ...) —
+    # no flat editor widget; configured in strategy files only (S404 etc.).
+    "adaptive_exit_by_depth",
 }
 
 

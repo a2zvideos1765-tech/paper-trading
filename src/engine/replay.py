@@ -24,7 +24,7 @@ import asyncpg
 import pandas as pd
 
 from src.core.db import conn, fetchrow
-from src.core.time import IST
+from src.core.time import IST, now_ist
 from src.engine.v2_engine import (
     ChargeConfigV2,
     StrategyV2,
@@ -199,6 +199,42 @@ async def replace_positions(portfolio_id: int, open_positions_state: dict[str, d
             )
 
 
+async def upsert_intraday_equity(
+    portfolio_id: int,
+    cash: float,
+    holdings_value: float,
+    equity: float,
+    open_positions: int,
+) -> None:
+    """Record one live equity point at the current minute (IST). Powers the
+    dashboard's real-time `as_of` and the intraday portion of the equity curve.
+    The daily `equity_snapshots` table is unchanged; this is a fine-grained overlay."""
+    ts = now_ist().replace(second=0, microsecond=0)
+    async with conn() as c:
+        await c.execute(
+            """
+            INSERT INTO equity_intraday (portfolio_id, ts, cash, holdings_value, equity, open_positions)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (portfolio_id, ts) DO UPDATE
+                SET cash = EXCLUDED.cash,
+                    holdings_value = EXCLUDED.holdings_value,
+                    equity = EXCLUDED.equity,
+                    open_positions = EXCLUDED.open_positions
+            """,
+            portfolio_id, ts, float(cash), float(holdings_value), float(equity), int(open_positions),
+        )
+
+
+async def prune_intraday_equity(keep_days: int = 3) -> None:
+    """Drop intraday points older than `keep_days` calendar days — the long-term
+    curve lives in equity_snapshots, so this table only needs the recent session(s)."""
+    async with conn() as c:
+        await c.execute(
+            "DELETE FROM equity_intraday WHERE ts < (now() - ($1::int || ' days')::interval)",
+            keep_days,
+        )
+
+
 async def upsert_equity_curve(portfolio_id: int, curve: list[dict]) -> None:
     if not curve:
         return
@@ -321,6 +357,7 @@ async def replay_one_portfolio(
     nifty_close: pd.Series,
     sensex_close: pd.Series,
     vix_close: pd.Series | None = None,
+    record_intraday: bool = False,
 ) -> dict:
     """Run the engine for this portfolio against the given candles window.
     Returns the engine's full result dict and persists trades / positions / equity.
@@ -359,6 +396,19 @@ async def replay_one_portfolio(
     holdings_state = _holdings_from_open_positions(result["open_positions"], result["trades"])
     await replace_positions(portfolio.id, holdings_state)
     await upsert_equity_curve(portfolio.id, result["equity_curve"])
+
+    # Real-time overlay: one live equity point per tick (market hours only, set by
+    # the trader). Derived from the engine's last daily point so the dashboard
+    # reflects the current session at minute resolution.
+    if record_intraday and result["equity_curve"]:
+        last = result["equity_curve"][-1]
+        await upsert_intraday_equity(
+            portfolio.id,
+            cash=last["cash"],
+            holdings_value=last["holdings_value"],
+            equity=last["equity"],
+            open_positions=int(last["open_positions"]),
+        )
 
     log.info(
         "replay completed",

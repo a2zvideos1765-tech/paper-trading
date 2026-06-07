@@ -31,6 +31,7 @@ def test_registry_loads_all_strategies():
         "S50_drop3_e15_alloc10_vol11",
         "S228_multiregime_bear_pyr_small",
         "S283_mm_dma_classic",
+        "S404_s392_side_only",
     }
 
 
@@ -200,3 +201,42 @@ def test_s283_parameters_match_upstream():
     assert s.mode_params_bear.volume_spike_min == 1.2
     assert s.mode_params_bear.sma_above_prev == 20
     assert s.mode_params_sideways.allocation_pct == 0.16
+
+
+def test_s404_parameters_match_upstream():
+    # strategies_v2.py out["S404_s392_side_only"], line 6200:
+    #   _s283_adaptive_mm(name, bull=_S311, bear=_S311, side=_S392)
+    # base chassis == S283_mm_dma_classic; only the adaptive depth ladders differ.
+    s = get("S404_s392_side_only")
+    S311 = (
+        (0.0, ((0.10, 0.5), (0.18, 1.0))),
+        (8.0, ((0.14, 0.5), (0.24, 1.0))),
+        (15.0, ((0.18, 0.5), (0.32, 1.0))),
+    )
+    S392 = (
+        (0.0, ((0.09, 0.5), (0.16, 1.0))),
+        (8.0, ((0.13, 0.5), (0.23, 1.0))),
+        (15.0, ((0.18, 0.5), (0.32, 1.0))),
+    )
+    # S283 chassis carried over verbatim
+    assert s.fall_threshold == -0.030
+    assert s.volume_spike_min == 1.1
+    assert s.pyramid_levels == ((-0.08, 0.06), (-0.16, 0.05), (-0.25, 0.04))
+    assert s.exit_tiers == ((0.15, 0.5), (0.25, 1.0))
+    assert s.allocation_mode == "pct_equity"
+    assert s.allocation_pct == 0.16
+    assert s.scan_times == ("11:00", "14:00")
+    assert s.macd_filter == "positive"
+    assert s.regime_source == "NIFTY_50"
+    assert s.vix_bear_threshold == 20.0
+    assert s.vix_only_bear is False
+    # adaptive depth ladders — the defining feature of S404
+    assert s.adaptive_exit_by_depth == S311
+    assert s.mode_params_bull.adaptive_exit_by_depth == S311
+    assert s.mode_params_bear.adaptive_exit_by_depth == S311
+    assert s.mode_params_sideways.adaptive_exit_by_depth == S392
+    # mode allocations unchanged from the S283 chassis
+    assert s.mode_params_bull.allocation_pct == 0.18
+    assert s.mode_params_bear.allocation_pct == 0.14
+    assert s.mode_params_sideways.allocation_pct == 0.16
+    assert s.mode_params_bear.sma_above_prev == 20

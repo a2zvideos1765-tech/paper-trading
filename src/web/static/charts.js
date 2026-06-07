@@ -14,7 +14,13 @@
     };
   }
 
-  function toUnix(ts) { return Math.floor(new Date(ts).getTime() / 1000); }
+  // Lightweight-charts renders its time axis in UTC. Our timestamps are IST
+  // (00:00 IST daily points = 18:30 UTC the prior day), which would label the
+  // axis a day early. Shift by +5:30 so the library's UTC rendering coincides
+  // with the IST wall clock. Applied consistently for setData AND crosshair
+  // lookups, so the two stay aligned. Display-only.
+  const IST_OFFSET_SECONDS = 5.5 * 3600;
+  function toUnix(ts) { return Math.floor(new Date(ts).getTime() / 1000) + IST_OFFSET_SECONDS; }
 
   function buildLegend(container, series, data) {
     container.innerHTML = '';

@@ -73,10 +73,16 @@
           <div class="text-xs">{{ pct(c.total_pct) }}</div>
         </div>
       </div>
-      <div class="grid grid-cols-3 gap-2 text-xs">
+      <div class="grid grid-cols-4 gap-2 text-xs">
         <div>
           <div class="text-muted">Day</div>
           <div class="font-mono">{{ pct(c.day_change_pct) }}</div>
+        </div>
+        <div title="Compound annual growth rate extrapolated from returns so far.">
+          <div class="text-muted">Est. APY</div>
+          <div class="font-mono">
+            {% if c.est_apy_pct is not none %}{{ pct(c.est_apy_pct) }}{% else %}<span class="text-muted">—</span>{% endif %}
+          </div>
         </div>
         <div>
           <div class="text-muted">Open</div>

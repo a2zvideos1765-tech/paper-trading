@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from src.core.db import fetch, fetchrow
+from src.core.metrics import estimated_apy
 
 
 router = APIRouter()
@@ -17,6 +18,7 @@ async def _portfolio_cards() -> list[dict]:
     rows = await fetch(
         """
         SELECT p.id, p.name, p.strategy_id, p.capital::float8 AS capital,
+               p.started_at,
                COALESCE(eq.equity, p.capital)::float8       AS equity,
                COALESCE(eq.cash, p.capital)::float8         AS cash,
                COALESCE(eq.holdings_value, 0)::float8       AS holdings_value,
@@ -59,6 +61,7 @@ async def _portfolio_cards() -> list[dict]:
             "day_change": day_change,
             "day_change_pct": day_change_pct,
             "total_pct": total_pct,
+            "est_apy_pct": estimated_apy(equity, capital, r["started_at"]),
         })
     return cards
 

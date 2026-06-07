@@ -6,7 +6,7 @@
 <header class="mt-2 mb-4">
   <h1 class="text-xl font-semibold text-default">Diagnose · {{ symbol }}</h1>
   <div class="text-xs text-muted mt-1">
-    {{ ts.strftime("%Y-%m-%d %H:%M %Z") }} · portfolio
+    {{ ts | ist }} IST · portfolio
     <span class="font-mono text-default">{{ portfolio.name }}</span> · strategy
     <span class="font-mono text-default">{{ portfolio.strategy_id }}</span>
   </div>
@@ -41,7 +41,7 @@
       <tbody>
       {% for t in trades %}
         <tr class="border-b border-default">
-          <td class="px-4 py-2 font-mono text-xs text-default">{{ t.ts.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+          <td class="px-4 py-2 font-mono text-xs text-default">{{ t.ts | ist("%Y-%m-%d %H:%M:%S") }}</td>
           <td class="px-4 py-2 {% if t.side == 'BUY' %}text-up{% else %}text-down{% endif %}">{{ t.side }}</td>
           <td class="px-4 py-2 text-right font-mono text-default">{{ t.qty }}</td>
           <td class="px-4 py-2 text-right font-mono text-default">{{ "{:,.2f}".format(t.price) }}</td>
@@ -73,7 +73,7 @@
       <tbody>
       {% for b in bars %}
         <tr class="border-b border-default">
-          <td class="px-4 py-2 font-mono text-xs text-default">{{ b.ts.strftime("%H:%M") }}</td>
+          <td class="px-4 py-2 font-mono text-xs text-default">{{ b.ts | ist("%H:%M") }}</td>
           <td class="px-4 py-2 font-mono text-xs text-default">{{ b.interval }}</td>
           <td class="px-4 py-2 text-right font-mono text-default">{{ "{:,.2f}".format(b.open) }}</td>
           <td class="px-4 py-2 text-right font-mono text-default">{{ "{:,.2f}".format(b.high) }}</td>

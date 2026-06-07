@@ -29,6 +29,7 @@ from src.engine.replay import (
     load_candles_window,
     load_index_close,
     load_portfolios,
+    prune_intraday_equity,
     replay_one_portfolio,
 )
 from src.engine.v2_engine import ChargeConfigV2
@@ -135,10 +136,19 @@ async def tick() -> None:
                 p_candles = candles
             else:
                 p_candles = candles[candles["timestamp"] >= p.started_at]
-            await replay_one_portfolio(p, strategy, p_candles, CHARGES, nifty, sensex, vix)
+            await replay_one_portfolio(
+                p, strategy, p_candles, CHARGES, nifty, sensex, vix,
+                record_intraday=True,
+            )
         except Exception as exc:  # noqa: BLE001
             log.exception("portfolio replay failed",
                           extra={"portfolio_id": p.id, "portfolio_name": p.name})
+
+    # Keep the intraday overlay table small — the long-term curve lives elsewhere.
+    try:
+        await prune_intraday_equity(keep_days=3)
+    except Exception:  # noqa: BLE001
+        log.exception("intraday prune failed")
 
     await heartbeat("trader", "ok", detail=f"replayed {len(portfolios)} portfolios")
 
