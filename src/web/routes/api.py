@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.core.db import execute, fetch, fetchrow
+from src.core.time import IST
 from src.strategies.registry import get as get_strategy
 from src.strategies.schema import field_defaults, public_schema
 from src.strategies.validation import coerce_and_apply
@@ -29,20 +30,31 @@ async def portfolio_state(portfolio_id: int) -> JSONResponse:
     )
     if not p:
         raise HTTPException(404)
+    # Prefer the live intraday point (minute resolution, true clock time); fall back
+    # to the daily snapshot before the first tick of the session.
     eq = await fetchrow(
         """
         SELECT cash::float8, holdings_value::float8, equity::float8, open_positions, ts
-        FROM equity_snapshots WHERE portfolio_id = $1 ORDER BY ts DESC LIMIT 1
+        FROM equity_intraday WHERE portfolio_id = $1 ORDER BY ts DESC LIMIT 1
         """,
         portfolio_id,
     )
+    if eq is None:
+        eq = await fetchrow(
+            """
+            SELECT cash::float8, holdings_value::float8, equity::float8, open_positions, ts
+            FROM equity_snapshots WHERE portfolio_id = $1 ORDER BY ts DESC LIMIT 1
+            """,
+            portfolio_id,
+        )
     return JSONResponse({
         "id": p["id"], "name": p["name"], "capital": p["capital"],
         "cash":           eq["cash"]           if eq else p["capital"],
         "holdings_value": eq["holdings_value"] if eq else 0.0,
         "equity":         eq["equity"]         if eq else p["capital"],
         "open_positions": eq["open_positions"] if eq else 0,
-        "as_of":          eq["ts"].isoformat() if eq else None,
+        # IST so the dashboard shows a real local clock time, not UTC.
+        "as_of":          eq["ts"].astimezone(IST).isoformat() if eq and eq["ts"] else None,
     })
 
 
@@ -103,10 +115,29 @@ async def equity_curve(portfolio_id: int) -> JSONResponse:
         if r["sensex_close"] is not None and r["sensex_base"]:
             sensex_norm = float(r["sensex_close"]) / float(r["sensex_base"]) * capital
         out.append({
-            "ts": r["ts"].isoformat(),
+            "ts": r["ts"].astimezone(IST).isoformat(),
             "equity": float(r["equity"]),
             "nifty": nifty_norm,
             "sensex": sensex_norm,
+        })
+
+    # Append today's intraday points so the curve moves during the live session.
+    # Benchmarks are daily, so they stay None for the intraday tail.
+    intraday = await fetch(
+        """
+        SELECT ts, equity::float8 AS equity
+        FROM equity_intraday
+        WHERE portfolio_id = $1 AND ts::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+        ORDER BY ts
+        """,
+        portfolio_id,
+    )
+    for r in intraday:
+        out.append({
+            "ts": r["ts"].astimezone(IST).isoformat(),
+            "equity": float(r["equity"]),
+            "nifty": None,
+            "sensex": None,
         })
     return JSONResponse(out)
 

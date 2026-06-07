@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from src.core.db import fetch, fetchrow
+from src.core.metrics import estimated_apy
+from src.web.routes.trades import TRADES_CSV_SQL, csv_response, rows_to_csv
 
 
 router = APIRouter()
+
+
+@router.get("/portfolio/{portfolio_id}/trades.csv")
+async def portfolio_trades_csv(portfolio_id: int) -> Response:
+    """Every trade for one portfolio as a CSV download."""
+    p = await fetchrow("SELECT name FROM portfolios WHERE id = $1", portfolio_id)
+    if not p:
+        raise HTTPException(404, "Portfolio not found")
+    rows = await fetch(TRADES_CSV_SQL.format(where="t.portfolio_id = $1"), portfolio_id)
+    return csv_response(rows_to_csv(rows), f"{p['name']}_trades.csv")
 
 
 @router.get("/portfolio/{portfolio_id}", response_class=HTMLResponse)
@@ -76,6 +88,9 @@ async def portfolio_detail(request: Request, portfolio_id: int) -> HTMLResponse:
         portfolio_id,
     )
 
+    equity_now = float(eq_now["equity"]) if eq_now else float(p["capital"])
+    est_apy = estimated_apy(equity_now, float(p["capital"]), p["started_at"])
+
     return request.app.state.templates.TemplateResponse(
         request, "portfolio.html",
         {
@@ -88,5 +103,7 @@ async def portfolio_detail(request: Request, portfolio_id: int) -> HTMLResponse:
             },
             "holdings": holdings,
             "recent_trades": [dict(t) for t in recent_trades],
+            "est_apy_pct": est_apy,
+            "total_pct": (equity_now / float(p["capital"]) - 1.0) * 100.0,
         },
     )

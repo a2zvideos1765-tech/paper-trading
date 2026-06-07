@@ -21,34 +21,67 @@
     · Capital {{ money(portfolio.capital, 0) }}
     {% if portfolio.started_at %}
       · Paper trading since
-      <span class="font-mono text-default">{{ portfolio.started_at.strftime("%Y-%m-%d %H:%M") }} IST</span>
+      <span class="font-mono text-default">{{ portfolio.started_at | ist }} IST</span>
     {% endif %}
     {% if not portfolio.enabled %}<span class="ml-2 pill pill-down">disabled</span>{% endif %}
   </div>
+  <div class="text-xs mt-2 flex items-center gap-4">
+    <span class="text-muted">Return {{ pct(total_pct) }}</span>
+    <span class="text-muted" title="Compound annual growth rate extrapolated from returns so far. Stabilises as more history accumulates.">
+      Est. APY (CAGR)
+      {% if est_apy_pct is not none %}{{ pct(est_apy_pct) }}{% else %}<span class="text-muted">— warming up</span>{% endif %}
+    </span>
+  </div>
 </header>
 
-<!-- Top stats -->
-<section class="card-2 p-4 mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm"
-         hx-get="/api/portfolio/{{ portfolio.id }}/state"
-         hx-trigger="every 15s"
-         hx-swap="none">
-  <div>
-    <div class="text-xs text-muted uppercase">Equity</div>
-    <div class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.equity) }}</div>
+<!-- Top stats (live: polls /state every 15s) -->
+<section class="card-2 p-4 mb-4">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+    <div>
+      <div class="text-xs text-muted uppercase">Equity</div>
+      <div id="stat-equity" class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.equity) }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-muted uppercase">Cash</div>
+      <div id="stat-cash" class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.cash) }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-muted uppercase">Holdings</div>
+      <div id="stat-holdings" class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.holdings_value) }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-muted uppercase">Open</div>
+      <div id="stat-open" class="font-mono font-semibold mt-0.5 text-default">{{ eq.open_positions }}</div>
+    </div>
   </div>
-  <div>
-    <div class="text-xs text-muted uppercase">Cash</div>
-    <div class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.cash) }}</div>
-  </div>
-  <div>
-    <div class="text-xs text-muted uppercase">Holdings</div>
-    <div class="font-mono font-semibold mt-0.5 text-default">{{ money(eq.holdings_value) }}</div>
-  </div>
-  <div>
-    <div class="text-xs text-muted uppercase">Open</div>
-    <div class="font-mono font-semibold mt-0.5 text-default">{{ eq.open_positions }}</div>
-  </div>
+  <div id="stat-asof" class="text-xs text-muted mt-3"></div>
 </section>
+
+<script>
+(() => {
+  const PID = {{ portfolio.id }};
+  const inr = (v) => '₹' + Number(v).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  async function refresh() {
+    try {
+      const r = await fetch(`/api/portfolio/${PID}/state`);
+      if (!r.ok) return;
+      const s = await r.json();
+      set('stat-equity', inr(s.equity));
+      set('stat-cash', inr(s.cash));
+      set('stat-holdings', inr(s.holdings_value));
+      set('stat-open', s.open_positions);
+      if (s.as_of) {
+        const d = new Date(s.as_of);
+        const t = d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'medium' });
+        set('stat-asof', 'As of ' + t + ' IST');
+      }
+    } catch (_) { /* transient network error — keep last values */ }
+  }
+  refresh();
+  setInterval(refresh, 15000);
+})();
+</script>
 
 <!-- Equity chart -->
 <section class="card-2 p-4 mb-4">
@@ -111,7 +144,11 @@
 <section class="card-2 mb-4 overflow-hidden">
   <div class="px-4 py-3 border-b border-default text-sm font-semibold flex items-center justify-between text-default">
     <span>Recent trades</span>
-    <a href="/trades" class="text-xs text-muted hover:text-default">All trades →</a>
+    <div class="flex items-center gap-3">
+      <a href="/portfolio/{{ portfolio.id }}/trades.csv"
+         class="text-xs text-accent hover:underline" download>⬇ CSV</a>
+      <a href="/trades" class="text-xs text-muted hover:text-default">All trades →</a>
+    </div>
   </div>
   <div class="overflow-x-auto">
     <table class="w-full text-sm">
@@ -128,7 +165,7 @@
       <tbody>
       {% for t in recent_trades %}
         <tr class="border-b border-default">
-          <td class="px-4 py-2 font-mono text-xs text-default">{{ t.ts.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="px-4 py-2 font-mono text-xs text-default">{{ t.ts | ist }}</td>
           <td class="px-4 py-2 font-medium text-default">{{ t.symbol }}</td>
           <td class="px-4 py-2 {% if t.side == 'BUY' %}text-up{% else %}text-down{% endif %}">{{ t.side }}</td>
           <td class="px-4 py-2 text-right font-mono text-default">{{ t.qty }}</td>

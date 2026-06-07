@@ -92,3 +92,13 @@ portfolios:
     strategy: S283_mm_dma_classic
     capital: 100000
     enabled: true
+
+  # ── S404_s392_side_only (multi-regime + adaptive depth exits; needs INDIA_VIX) ──
+  - name: S404_s392_side_only_50k
+    strategy: S404_s392_side_only
+    capital: 50000
+    enabled: true
+  - name: S404_s392_side_only_100k
+    strategy: S404_s392_side_only
+    capital: 100000
+    enabled: true

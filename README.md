@@ -589,6 +589,41 @@ pm2 restart paperaglo-trader   # picks up the new portfolios from YAML
 
 ---
 
+## Phase 3 — S404, CSV export, real-time clock, estimated APY
+
+- **S404_s392_side_only** — multi-regime S283 chassis with mode-aware *adaptive
+  depth-bucket exits* (`adaptive_exit_by_depth`). Adding it required re-vendoring
+  the engine again (1,262 → 1,403 lines, five `# === paper-trading patch ===`
+  blocks). 2 new portfolios in `config/portfolios.yaml`.
+- **CSV trade export** — every page has downloads:
+  `GET /portfolio/{id}/trades.csv` (one portfolio) and
+  `GET /strategy/{strategy_id}/trades.csv` (merged across that strategy's
+  portfolios). Timestamps are exported in IST.
+- **Timezone display fix** — dashboard timestamps were rendering in UTC (an
+  11:00 IST trade showed as 05:30). An `ist` Jinja filter now converts every DB
+  `TIMESTAMPTZ` to IST. The engine was always firing at the right IST time — only
+  the display was off.
+- **Real-time intraday equity** — new `equity_intraday` table
+  (`sql/006_intraday_equity.sql`); the trader writes one live point per tick and
+  prunes to ~3 days. The portfolio stats bar now polls `/state` and shows a true
+  "As of HH:MM:SS IST", and the equity chart moves intraday.
+- **Estimated APY (CAGR)** — `src/core/metrics.py::estimated_apy` annualises the
+  current return; shown on the dashboard cards and portfolio header. Reads "—"
+  until a portfolio has ≥ 7 days of history (early CAGR is noise).
+
+Deploy:
+
+```bash
+git pull
+psql -U paper -d paper_trading -h 127.0.0.1 -f sql/006_intraday_equity.sql
+pm2 restart paperaglo-web paperaglo-trader paperaglo-poller
+python -m tools.verify_regime         # optional read-only smoke test (now covers S404)
+```
+
+S404 trades forward-only from the next market open.
+
+---
+
 ## Testing
 
 ```bash

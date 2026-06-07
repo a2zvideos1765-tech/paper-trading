@@ -6,6 +6,7 @@ Routes are split across src/web/routes/. This file wires the app together.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -17,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.core.config import REPO_ROOT, settings
 from src.core.db import close_pool, get_pool
 from src.core.logging import setup_logging
+from src.core.time import IST
 from src.web.auth import is_authenticated, is_viewer
 from src.web.routes import api, dashboard, diagnose, health, login, portfolios, symbols, trades
 
@@ -44,7 +46,19 @@ def _is_viewer_ctx(request: Request) -> dict:
     return {"is_viewer": is_viewer(request)}
 
 
+def _ist_filter(dt: datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Render a DB TIMESTAMPTZ in IST. asyncpg returns timezone-aware UTC datetimes,
+    so a naive .strftime() would print UTC (−5:30) — e.g. an 11:00 IST trade as 05:30.
+    This converts to IST first so every timestamp on the dashboard reads as IST."""
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).strftime(fmt)
+
+
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR), context_processors=[_is_viewer_ctx])
+templates.env.filters["ist"] = _ist_filter
 app.state.templates = templates
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

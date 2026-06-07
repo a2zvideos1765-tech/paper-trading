@@ -12,7 +12,7 @@
   <div class="text-right text-xs text-muted">
     <div>Instrument master: <span class="font-mono text-default">{{ "{:,}".format(instr_count) }}</span> rows</div>
     {% if instr_meta_updated %}
-      <div>Last refreshed: <span class="font-mono text-default">{{ instr_meta_updated.strftime("%Y-%m-%d %H:%M") }}</span></div>
+      <div>Last refreshed: <span class="font-mono text-default">{{ instr_meta_updated | ist }}</span></div>
     {% else %}
       <div class="text-down">Never refreshed — run "Refresh now" once.</div>
     {% endif %}
@@ -82,7 +82,7 @@
           </td>
           <td class="px-4 py-2 text-muted font-mono text-xs hidden md:table-cell">{{ u.token }}</td>
           <td class="px-4 py-2 text-muted text-xs hidden md:table-cell">
-            {{ u.added_at.strftime("%Y-%m-%d") if u.added_at else "" }}
+            {{ u.added_at | ist("%Y-%m-%d") if u.added_at else "" }}
           </td>
           <td class="px-4 py-2 text-right">
             {% if not is_viewer %}
@@ -137,10 +137,10 @@
             {% endif %}
           </td>
           <td class="px-4 py-2 text-xs text-muted hidden md:table-cell font-mono">
-            {{ b.enqueued_at.strftime("%Y-%m-%d %H:%M") if b.enqueued_at else "" }}
+            {{ b.enqueued_at | ist if b.enqueued_at else "" }}
           </td>
           <td class="px-4 py-2 text-xs text-muted hidden md:table-cell font-mono">
-            {{ b.finished_at.strftime("%Y-%m-%d %H:%M") if b.finished_at else "" }}
+            {{ b.finished_at | ist if b.finished_at else "" }}
           </td>
           <td class="px-4 py-2 text-xs text-muted">{{ b.error or "" }}</td>
         </tr>
