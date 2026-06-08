@@ -70,6 +70,113 @@ class AngelClient:
             raise SystemExit(f"Angel login failed: {session}")
         return cls(smart=smart)
 
+    # ------------------------------------------------------------------
+    # Order placement + account reads (real-money trading).
+    #
+    # The same authenticated SmartConnect session used for candles handles
+    # orders, funds, holdings and positions. Read calls are retry-wrapped
+    # (safe to repeat). place_order is NOT retried — repeating an order risks
+    # a duplicate fill — the caller records intent before calling and decides.
+    # ------------------------------------------------------------------
+
+    def place_order(
+        self,
+        tradingsymbol: str,
+        token: str,
+        exchange: str,
+        side: str,
+        qty: int,
+        price: float,
+        *,
+        product: str = "DELIVERY",   # Angel's term for CNC / delivery
+        order_type: str = "LIMIT",   # priced at the engine's decided price
+        variety: str = "NORMAL",
+        duration: str = "DAY",
+    ) -> str:
+        """Place a single equity order and return Angel's order id.
+
+        Defaults are CNC/delivery LIMIT, DAY validity — the swing-strategy bot
+        prices each order at the engine's decided trade price. Not retried.
+        """
+        params = {
+            "variety": variety,
+            "tradingsymbol": tradingsymbol,
+            "symboltoken": str(token),
+            "transactiontype": side.upper(),     # "BUY" | "SELL"
+            "exchange": exchange,
+            "ordertype": order_type,
+            "producttype": product,
+            "duration": duration,
+            "price": f"{float(price):.2f}",
+            "squareoff": "0",
+            "stoploss": "0",
+            "quantity": str(int(qty)),
+        }
+        resp = self.smart.placeOrder(params)
+        # SDK versions differ: some return the order-id string directly, others a
+        # dict {"status", "data": {"orderid": ...}}. Normalise to the id string.
+        if isinstance(resp, dict):
+            if not resp.get("status", True):
+                raise RuntimeError(f"Angel placeOrder failed: {resp}")
+            data = resp.get("data") or {}
+            order_id = data.get("orderid") or data.get("orderId")
+            if not order_id:
+                raise RuntimeError(f"Angel placeOrder returned no order id: {resp}")
+            return str(order_id)
+        if not resp:
+            raise RuntimeError("Angel placeOrder returned an empty order id")
+        return str(resp)
+
+    def cancel_order(self, order_id: str, variety: str = "NORMAL") -> dict:
+        """Cancel an open order by Angel order id."""
+        return _call_with_retry(lambda: self.smart.cancelOrder(order_id, variety), max_retries=2)
+
+    def get_order_book(self) -> list[dict]:
+        """Return the day's order book (list of order dicts). Empty list if none."""
+        resp = _call_with_retry(self.smart.orderBook, max_retries=3)
+        if isinstance(resp, dict):
+            return resp.get("data") or []
+        return resp or []
+
+    def get_funds(self) -> dict:
+        """Return the RMS limit / funds dict (availablecash, net, utiliseddebits, …)."""
+        resp = _call_with_retry(self.smart.rmsLimit, max_retries=3)
+        if isinstance(resp, dict):
+            return resp.get("data") or {}
+        return resp or {}
+
+    def get_holdings(self) -> list[dict]:
+        """Return the account's equity holdings (list of holding dicts)."""
+        # allholding() carries per-holding rows + a totalholding summary; prefer it,
+        # fall back to holding() on older SDKs.
+        getter = getattr(self.smart, "allholding", None) or getattr(self.smart, "holding")
+        resp = _call_with_retry(getter, max_retries=3)
+        if isinstance(resp, dict):
+            data = resp.get("data") or {}
+            if isinstance(data, dict):
+                return data.get("holdings") or []
+            return data or []
+        return resp or []
+
+    def get_positions(self) -> list[dict]:
+        """Return today's positions (list of position dicts). Empty list if none."""
+        resp = _call_with_retry(self.smart.position, max_retries=3)
+        if isinstance(resp, dict):
+            return resp.get("data") or []
+        return resp or []
+
+    def get_ltp(self, exchange: str, tradingsymbol: str, token: str) -> float | None:
+        """Return the last traded price for one instrument, or None if unavailable."""
+        resp = _call_with_retry(
+            lambda: self.smart.ltpData(exchange, tradingsymbol, str(token)),
+            max_retries=3,
+        )
+        if isinstance(resp, dict):
+            data = resp.get("data") or {}
+            ltp = data.get("ltp")
+            return float(ltp) if ltp is not None else None
+        return None
+
     def get_candle(
         self,
         symbol: str,
@@ -103,6 +210,21 @@ class AngelClient:
         df["symbol"] = symbol
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         return df[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
+
+
+def _call_with_retry(fn, *, max_retries: int = 3):
+    """Call a zero-arg Angel SDK function with the same rate-limit backoff used for
+    candle fetches. For READ-only calls — never wrap order placement in this."""
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            is_rate_limit = "exceeding access rate" in msg or "access denied" in msg
+            if not is_rate_limit or attempt >= max_retries:
+                raise
+            time.sleep(min(90, 10 * (attempt + 1)))
+    raise RuntimeError("Unreachable retry state")
 
 
 def _get_candle_with_retry(smart: SmartConnect, params: dict[str, Any], max_retries: int) -> dict[str, Any]:

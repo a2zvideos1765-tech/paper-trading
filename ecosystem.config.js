@@ -90,5 +90,36 @@ module.exports = {
       error_file: "logs/pm2/instruments.err.log",
       merge_logs: true,
     },
+    {
+      // Real-money trading runner (Angel One). Places CNC LIMIT orders at the
+      // engine's decided price for the live S404 portfolio. The master kill switch
+      // (real_bot_state.enabled) defaults OFF on deploy — flip it on /bot when ready.
+      // Always runs (shadows funds/holdings even when the bot is OFF).
+      name: "paperaglo-real-trader",
+      script: "python",
+      args: "-m src.runners.real_trader",
+      cwd: __dirname,
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 15000,
+      out_file: "logs/pm2/real_trader.out.log",
+      error_file: "logs/pm2/real_trader.err.log",
+      merge_logs: true,
+    },
+    {
+      // MCP server — allows Claude to read/debug the platform and make minor writes
+      // (add/remove symbols, toggle bot, tweak strategy params). No order placement.
+      // Requires MCP_TOKEN in .env. Reverse-proxy with Caddy (see Caddyfile.example).
+      name: "paperaglo-mcp",
+      script: "python",
+      args: "-m src.mcp.server",
+      cwd: __dirname,
+      autorestart: true,
+      max_restarts: 20,
+      restart_delay: 10000,
+      out_file: "logs/pm2/mcp.out.log",
+      error_file: "logs/pm2/mcp.err.log",
+      merge_logs: true,
+    },
   ],
 };

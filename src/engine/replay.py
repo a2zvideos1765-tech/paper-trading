@@ -55,11 +55,16 @@ class PortfolioRow:
 
 # ---------- Loading state from DB ----------
 
-async def load_portfolios() -> list[PortfolioRow]:
+async def load_portfolios(live: bool = False) -> list[PortfolioRow]:
+    """Load enabled portfolios. `live=False` (default) returns paper portfolios
+    for the paper trader; `live=True` returns the real-money portfolio(s) for the
+    real trader. The `live` flag keeps the two traders from ever touching each
+    other's portfolios."""
     async with conn() as c:
         rows = await c.fetch(
             "SELECT id, name, strategy_id, capital::float8, enabled, started_at "
-            "FROM portfolios WHERE enabled = TRUE ORDER BY id"
+            "FROM portfolios WHERE enabled = TRUE AND live = $1 ORDER BY id",
+            live,
         )
     return [PortfolioRow(**dict(r)) for r in rows]
 
@@ -358,12 +363,17 @@ async def replay_one_portfolio(
     sensex_close: pd.Series,
     vix_close: pd.Series | None = None,
     record_intraday: bool = False,
+    deposits: dict[str, float] | None = None,
 ) -> dict:
     """Run the engine for this portfolio against the given candles window.
     Returns the engine's full result dict and persists trades / positions / equity.
 
     `vix_close` is the INDIA_VIX daily-close series — required by multi-regime
     strategies (S228/S283) for the VIX-fear regime override; harmless if absent.
+
+    `deposits` is the SIP variable-deposit map ({"YYYY-MM-DD": amount}) for the
+    live real-money portfolio; the first deposit is `starting_cash`, later ones
+    are injected mid-run. None (default) → no injections (all paper portfolios).
     """
     clear_regime_cache()
     if not nifty_close.empty:
@@ -389,7 +399,7 @@ async def replay_one_portfolio(
     # Bind the portfolio's capital to the (possibly overridden) strategy.
     bound = replace(overridden, starting_cash=float(portfolio.capital))
 
-    result = run_backtest_v2(candles, bound, charges)
+    result = run_backtest_v2(candles, bound, charges, deposits=deposits)
 
     # Persist
     await upsert_trades(portfolio.id, result["trades"])

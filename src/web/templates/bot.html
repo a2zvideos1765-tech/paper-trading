@@ -1,0 +1,352 @@
+{% extends "base.html" %}
+{% block title %}Bot · Paper Trading{% endblock %}
+
+{% block content %}
+<header class="mb-4 flex items-start justify-between gap-3 flex-wrap">
+  <div>
+    <h1 class="text-xl font-semibold text-default flex items-center gap-2">
+      Real-Money Bot
+      <span id="market-badge"
+            class="text-xs px-2 py-0.5 rounded-full font-normal
+                   {% if market_open %}bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400
+                   {% else %}bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400{% endif %}">
+        {{ "Market open" if market_open else "Market closed" }}
+      </span>
+    </h1>
+    <p class="text-xs text-muted mt-1">
+      Angel One · S404 strategy · CNC LIMIT orders at engine price · SIP-aware
+    </p>
+  </div>
+
+  <!-- Master kill switch -->
+  {% if not is_viewer %}
+  <div class="flex flex-col items-end gap-1">
+    <button id="toggle-btn"
+            class="px-5 py-2 rounded-lg font-semibold text-sm transition-colors
+                   {% if bot_enabled %}bg-red-600 hover:bg-red-700 text-white
+                   {% else %}bg-green-600 hover:bg-green-700 text-white{% endif %}"
+            onclick="toggleBot()">
+      {% if bot_enabled %}⏹ Stop bot{% else %}▶ Start bot{% endif %}
+    </button>
+    <span id="toggle-note" class="text-xs text-muted">
+      {% if bot_enabled %}Bot is LIVE — orders will be placed{% else %}Bot is OFF — shadow sync only{% endif %}
+    </span>
+  </div>
+  {% else %}
+  <div class="text-xs text-muted">View-only session — cannot toggle bot.</div>
+  {% endif %}
+</header>
+
+<!-- 3-column stat bar -->
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4" id="stat-bar">
+
+  <div class="card-2 p-4">
+    <div class="text-xs text-muted mb-1">Available Cash</div>
+    <div class="text-lg font-semibold text-default" id="stat-cash">
+      {% if funds %}₹{{ "{:,.0f}".format(funds.available_cash) }}{% else %}—{% endif %}
+    </div>
+  </div>
+
+  <div class="card-2 p-4">
+    <div class="text-xs text-muted mb-1">Net Value</div>
+    <div class="text-lg font-semibold text-default" id="stat-net">
+      {% if funds %}₹{{ "{:,.0f}".format(funds.net) }}{% else %}—{% endif %}
+    </div>
+  </div>
+
+  <div class="card-2 p-4">
+    <div class="text-xs text-muted mb-1">Utilised Margin</div>
+    <div class="text-lg font-semibold text-default" id="stat-utilised">
+      {% if funds %}₹{{ "{:,.0f}".format(funds.utilised) }}{% else %}—{% endif %}
+    </div>
+  </div>
+
+  <div class="card-2 p-4">
+    <div class="text-xs text-muted mb-1">Total SIP Deposited</div>
+    <div class="text-lg font-semibold text-default">₹{{ "{:,.0f}".format(total_deposited) }}</div>
+  </div>
+
+</div>
+
+<!-- funds as-of -->
+<p class="text-xs text-muted mb-5" id="funds-as-of">
+  {% if funds and funds.as_of %}Funds as of: {{ funds.as_of | ist }}{% endif %}
+</p>
+
+<!-- Runner status -->
+<div id="runner-status-bar" class="mb-4 flex items-center gap-3 text-xs text-muted">
+  <span>Runner:</span>
+  <span id="runner-status-badge" class="pill pill-muted">checking…</span>
+  <span id="runner-detail" class="text-muted truncate max-w-xs"></span>
+  <span id="runner-beat" class="text-muted ml-auto"></span>
+</div>
+
+{% if live_pf %}
+<p class="text-xs text-muted mb-5">
+  Live portfolio:
+  <a href="/portfolio/{{ live_pf.id }}" class="text-accent underline">{{ live_pf.name }}</a>
+  ({{ live_pf.strategy_id }}, ₹{{ "{:,.0f}".format(live_pf.capital) }} initial capital)
+</p>
+{% endif %}
+
+<!-- Holdings -->
+<section class="card-2 mb-5 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default flex items-center justify-between">
+    <span class="text-sm font-semibold text-default">Angel Holdings</span>
+    <span id="holdings-count" class="text-xs text-muted"></span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm" id="holdings-table">
+      <thead>
+        <tr class="border-b border-default text-xs text-muted">
+          <th class="px-4 py-2 text-left">Symbol</th>
+          <th class="px-4 py-2 text-right">Qty</th>
+          <th class="px-4 py-2 text-right">Avg Price</th>
+          <th class="px-4 py-2 text-right">LTP</th>
+          <th class="px-4 py-2 text-right">P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody id="holdings-tbody">
+        <tr><td colspan="5" class="px-4 py-6 text-center text-muted text-xs">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Orders -->
+<section class="card-2 mb-5 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default flex items-center justify-between">
+    <span class="text-sm font-semibold text-default">Real Orders</span>
+    <span id="orders-count" class="text-xs text-muted"></span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm" id="orders-table">
+      <thead>
+        <tr class="border-b border-default text-xs text-muted">
+          <th class="px-4 py-2 text-left">Time</th>
+          <th class="px-4 py-2 text-left">Symbol</th>
+          <th class="px-4 py-2 text-left">Side</th>
+          <th class="px-4 py-2 text-right">Qty</th>
+          <th class="px-4 py-2 text-right">Req. Price</th>
+          <th class="px-4 py-2 text-right">Fill Price</th>
+          <th class="px-4 py-2 text-left">Status</th>
+          <th class="px-4 py-2 text-left">Angel ID</th>
+          <th class="px-4 py-2 text-left">Reason</th>
+        </tr>
+      </thead>
+      <tbody id="orders-tbody">
+        <tr><td colspan="9" class="px-4 py-6 text-center text-muted text-xs">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- SIP Deposits -->
+<section class="card-2 mb-5 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default">
+    <span class="text-sm font-semibold text-default">SIP Deposits</span>
+    <span class="text-xs text-muted ml-2">auto-detected cash increases ≥ ₹500</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-default text-xs text-muted">
+          <th class="px-4 py-2 text-left">Date / Time</th>
+          <th class="px-4 py-2 text-right">Amount</th>
+          <th class="px-4 py-2 text-right">Cash Before</th>
+          <th class="px-4 py-2 text-right">Cash After</th>
+          <th class="px-4 py-2 text-left">Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in deposits %}
+        <tr class="border-b border-default hover:bg-surface2 transition-colors">
+          <td class="px-4 py-2 font-mono text-xs text-muted">{{ d.ts | ist }}</td>
+          <td class="px-4 py-2 text-right font-semibold">₹{{ "{:,.0f}".format(d.amount) }}</td>
+          <td class="px-4 py-2 text-right text-muted text-xs">
+            {% if d.available_before is not none %}₹{{ "{:,.0f}".format(d.available_before) }}{% else %}—{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right text-muted text-xs">
+            {% if d.available_after is not none %}₹{{ "{:,.0f}".format(d.available_after) }}{% else %}—{% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs text-muted">{{ d.note or "—" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="px-4 py-6 text-center text-muted text-xs">No SIP deposits detected yet. Transfer funds to Angel and the bot will auto-detect the deposit within one tick.</td></tr>
+        {% endfor %}
+        {% if deposits %}
+        <tr class="bg-surface2">
+          <td class="px-4 py-2 text-xs font-semibold text-default" colspan="1">Total</td>
+          <td class="px-4 py-2 text-right font-semibold text-default">₹{{ "{:,.0f}".format(total_deposited) }}</td>
+          <td colspan="3"></td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- status polling ----
+  async function pollStatus() {
+    try {
+      const r = await fetch("/api/bot/status");
+      const d = await r.json();
+
+      // market badge
+      const mb = document.getElementById("market-badge");
+      if (mb) {
+        mb.textContent = d.market_open ? "Market open" : "Market closed";
+        mb.className = mb.className.replace(/bg-\S+|text-\S+/g, "").trim();
+        mb.className += d.market_open
+          ? " bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400"
+          : " bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400";
+      }
+
+      // runner status
+      const badge = document.getElementById("runner-status-badge");
+      if (badge) {
+        badge.textContent = d.runner_status || "—";
+        badge.className = "pill " + (d.runner_status === "ok" ? "pill-green" : d.runner_status === "error" ? "pill-red" : "pill-muted");
+      }
+      const det = document.getElementById("runner-detail");
+      if (det) det.textContent = d.runner_detail || "";
+      const beat = document.getElementById("runner-beat");
+      if (beat && d.last_beat) beat.textContent = "Last beat: " + d.last_beat.replace("T", " ").slice(0, 19) + " IST";
+
+    } catch (_) {}
+  }
+
+  // ---- funds polling ----
+  async function pollFunds() {
+    try {
+      const r = await fetch("/api/bot/funds");
+      const d = await r.json();
+      const fmt = v => v != null ? "₹" + v.toLocaleString("en-IN", {maximumFractionDigits: 0}) : "—";
+      const cash = document.getElementById("stat-cash");
+      const net = document.getElementById("stat-net");
+      const util = document.getElementById("stat-utilised");
+      const asof = document.getElementById("funds-as-of");
+      if (cash) cash.textContent = fmt(d.available_cash);
+      if (net) net.textContent = fmt(d.net);
+      if (util) util.textContent = fmt(d.utilised);
+      if (asof && d.as_of) asof.textContent = "Funds as of: " + d.as_of.replace("T", " ").slice(0, 19) + " IST";
+    } catch (_) {}
+  }
+
+  // ---- holdings polling ----
+  async function pollHoldings() {
+    try {
+      const r = await fetch("/api/bot/holdings");
+      const rows = await r.json();
+      const cnt = document.getElementById("holdings-count");
+      if (cnt) cnt.textContent = rows.length + " holding(s)";
+      const tbody = document.getElementById("holdings-tbody");
+      if (!tbody) return;
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-muted text-xs">No holdings in Angel account.</td></tr>';
+        return;
+      }
+      const fmt = v => v != null ? "₹" + v.toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2}) : "—";
+      const fmtPnl = v => {
+        if (v == null) return "—";
+        const cls = v >= 0 ? "text-green-600 dark:text-green-400" : "text-red-500";
+        return `<span class="${cls}">${v >= 0 ? "+" : ""}₹${Math.abs(v).toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
+      };
+      tbody.innerHTML = rows.map(h => `
+        <tr class="border-b border-default hover:bg-surface2 transition-colors">
+          <td class="px-4 py-2 font-mono font-semibold text-default">${h.symbol}</td>
+          <td class="px-4 py-2 text-right">${h.qty}</td>
+          <td class="px-4 py-2 text-right font-mono">${fmt(h.avg_price)}</td>
+          <td class="px-4 py-2 text-right font-mono">${fmt(h.ltp)}</td>
+          <td class="px-4 py-2 text-right font-mono">${fmtPnl(h.pnl)}</td>
+        </tr>`).join("");
+    } catch (_) {}
+  }
+
+  // ---- orders polling ----
+  const STATUS_PILL = {
+    pending:   "pill-muted",
+    open:      "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+    complete:  "pill-green",
+    rejected:  "pill-red",
+    cancelled: "pill-muted",
+    error:     "pill-red",
+  };
+
+  async function pollOrders() {
+    try {
+      const r = await fetch("/api/bot/orders?limit=50");
+      const rows = await r.json();
+      const cnt = document.getElementById("orders-count");
+      if (cnt) cnt.textContent = rows.length + " order(s)";
+      const tbody = document.getElementById("orders-tbody");
+      if (!tbody) return;
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-6 text-center text-muted text-xs">No real orders placed yet. Switch the bot ON during market hours to place orders.</td></tr>';
+        return;
+      }
+      const fmtP = v => v != null ? "₹" + v.toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2}) : "—";
+      const fmtT = s => s ? s.replace("T", " ").slice(0, 16) + " IST" : "—";
+      tbody.innerHTML = rows.map(o => {
+        const pillCls = STATUS_PILL[o.status] || "pill-muted";
+        const sideCls = o.side === "BUY" ? "text-green-600 dark:text-green-400" : "text-red-500";
+        return `
+        <tr class="border-b border-default hover:bg-surface2 transition-colors text-xs">
+          <td class="px-4 py-2 font-mono text-muted whitespace-nowrap">${fmtT(o.requested_at)}</td>
+          <td class="px-4 py-2 font-mono font-semibold text-default">${o.symbol}</td>
+          <td class="px-4 py-2 font-semibold ${sideCls}">${o.side}</td>
+          <td class="px-4 py-2 text-right">${o.qty}${o.filled_qty > 0 && o.filled_qty < o.qty ? " <span class='text-muted'>(" + o.filled_qty + " filled)</span>" : ""}</td>
+          <td class="px-4 py-2 text-right font-mono">${fmtP(o.requested_price)}</td>
+          <td class="px-4 py-2 text-right font-mono">${fmtP(o.avg_fill_price)}</td>
+          <td class="px-4 py-2"><span class="pill text-[10px] ${pillCls}">${o.status}</span>${o.error ? '<div class="text-red-400 mt-0.5 truncate max-w-[12rem]" title="' + o.error + '">' + o.error.slice(0, 40) + '…</div>' : ""}</td>
+          <td class="px-4 py-2 font-mono text-muted">${o.angel_order_id || "—"}</td>
+          <td class="px-4 py-2 text-muted max-w-[14rem] truncate" title="${o.reason || ""}">${o.reason || "—"}</td>
+        </tr>`;
+      }).join("");
+    } catch (_) {}
+  }
+
+  // ---- toggle ----
+  window.toggleBot = async function () {
+    const btn = document.getElementById("toggle-btn");
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = "…";
+    try {
+      const r = await fetch("/api/bot/toggle", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+      if (!r.ok) { alert("Error: " + (await r.text())); btn.disabled = false; return; }
+      const d = await r.json();
+      const note = document.getElementById("toggle-note");
+      if (d.enabled) {
+        btn.className = btn.className.replace(/bg-green-\d+|hover:bg-green-\d+/g, "bg-red-600 hover:bg-red-700");
+        btn.textContent = "⏹ Stop bot";
+        if (note) note.textContent = "Bot is LIVE — orders will be placed";
+      } else {
+        btn.className = btn.className.replace(/bg-red-\d+|hover:bg-red-\d+/g, "bg-green-600 hover:bg-green-700");
+        btn.textContent = "▶ Start bot";
+        if (note) note.textContent = "Bot is OFF — shadow sync only";
+      }
+    } catch (e) {
+      alert("Toggle failed: " + e);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // ---- initial + interval ----
+  pollStatus();
+  pollFunds();
+  pollHoldings();
+  pollOrders();
+
+  setInterval(pollStatus, 15_000);    // status every 15s
+  setInterval(pollFunds, 30_000);     // funds every 30s
+  setInterval(pollHoldings, 30_000);  // holdings every 30s
+  setInterval(pollOrders, 20_000);    // orders every 20s
+})();
+</script>
+{% endblock %}

@@ -92,9 +92,11 @@ async def sync_portfolios_from_yaml() -> None:
                 """,
                 r["name"],
             )
-        # Mark any existing DB row not in YAML as disabled.
+        # Mark any existing PAPER row not in YAML as disabled. Live (real-money)
+        # portfolios are managed by the real trader / sql/007 — never auto-disabled
+        # here just because they're absent from portfolios.yaml.
         await c.execute(
-            "UPDATE portfolios SET enabled = FALSE WHERE name <> ALL($1::text[])",
+            "UPDATE portfolios SET enabled = FALSE WHERE name <> ALL($1::text[]) AND NOT live",
             list(yaml_names),
         )
 

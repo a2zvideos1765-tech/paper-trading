@@ -15,7 +15,7 @@
 paper.studiohappens.tech {
     encode gzip zstd
 
-    # FastAPI lives on localhost:8000 (WEB_PORT in .env).
+    # FastAPI dashboard lives on localhost:8000 (WEB_PORT in .env).
     reverse_proxy 127.0.0.1:8000 {
         header_up X-Real-IP {remote_host}
     }
@@ -25,6 +25,37 @@ paper.studiohappens.tech {
         output file /var/log/caddy/paperaglo.log {
             roll_size 10mb
             roll_keep 5
+        }
+    }
+}
+
+# MCP server — Claude connects here to read/debug the platform.
+# The MCP_TOKEN bearer check is enforced by the MCP server itself,
+# but we also guard it at the Caddy layer for defence-in-depth:
+# any request without the correct Authorization header gets a 401
+# before it ever reaches the Python process.
+#
+# Replace MCP_TOKEN_VALUE with the actual token from your .env,
+# or just rely on the Python-level auth and remove the @no_token block.
+mcp.studiohappens.tech {
+    encode gzip zstd
+
+    @no_token {
+        not header Authorization "Bearer {env.MCP_TOKEN}"
+    }
+    respond @no_token "Unauthorized" 401
+
+    # MCP server (streamable-http transport) on MCP_PORT (default 8001).
+    reverse_proxy 127.0.0.1:8001 {
+        header_up X-Real-IP {remote_host}
+        # SSE connections must stay alive for the duration of the tool call.
+        flush_interval -1
+    }
+
+    log {
+        output file /var/log/caddy/paperaglo-mcp.log {
+            roll_size 10mb
+            roll_keep 3
         }
     }
 }

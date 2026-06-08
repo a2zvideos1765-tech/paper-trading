@@ -53,6 +53,10 @@ class Settings:
     log_level: str
     log_dir: Path
 
+    mcp_token: str | None        # Bearer token for the MCP server (None = MCP disabled)
+    mcp_host: str
+    mcp_port: int
+
     @property
     def pg_dsn(self) -> str:
         return (
@@ -82,6 +86,9 @@ def load_settings() -> Settings:
         trader_offset_seconds=int(_opt("TRADER_OFFSET_SECONDS", "5")),
         log_level=_opt("LOG_LEVEL", "INFO").upper(),
         log_dir=REPO_ROOT / _opt("LOG_DIR", "logs"),
+        mcp_token=(os.getenv("MCP_TOKEN") or None),
+        mcp_host=_opt("MCP_HOST", "127.0.0.1"),
+        mcp_port=int(_opt("MCP_PORT", "8001")),
     )
 
 

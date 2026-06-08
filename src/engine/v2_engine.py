@@ -291,6 +291,14 @@ class StrategyV2:
     max_new_buys_per_day: int | None = None
     slippage_rate: float = 0.001
 
+    # SIP / variable-deposit support.
+    # When min_entry_cash is set, no new BUY orders fire on days when free cash < this amount.
+    # Prevents tiny positions where the DP sell charge (₹15.34) forms an outsized % of turnover.
+    # Recommended minimum: ₹5,000 (DP charge = 0.31% at that size, acceptable vs 0.89% at ₹2k).
+    # Has no effect on pyramid adds or exits — only initial entries are gated.
+    # Default None → disabled, backward-compatible with all existing strategies.
+    min_entry_cash: float | None = None
+
 
 @dataclass(frozen=True)
 class ChargeConfigV2:
@@ -695,10 +703,19 @@ def run_backtest_v2(
     strategy: StrategyV2,
     charges: ChargeConfigV2,
     start_date=None,
+    deposits: "dict[str, float] | None" = None,
 ) -> dict:
     """Run V2 backtest. `prices` must have columns: timestamp, symbol, open, high, low, close, volume, date, time.
 
-    Returns dict with summary, equity_curve, trades, open_positions.
+    Args:
+        deposits: Optional dict mapping date strings ("YYYY-MM-DD") to cash amounts.
+            On matching trading days, the amount is injected into `cash` before exits/entries.
+            Enables SIP-style variable-deposit scenarios where capital is added over time.
+            The first deposit is typically handled via strategy.starting_cash; subsequent ones
+            go here.  When pct_equity allocation mode is used, each deposit automatically scales
+            future position sizes upward — no strategy parameter changes needed.
+
+    Returns dict with summary, equity_curve, trades, open_positions, and deposits log.
     """
     # Determine effective scan windows for entry (primary + any extras)
     _effective_scan_times: tuple[str, ...] = strategy.scan_times if strategy.scan_times is not None else (strategy.scan_time,)
@@ -776,12 +793,24 @@ def run_backtest_v2(
     holdings: dict[str, dict] = {}
     trades: list[dict] = []
     equity_curve: list[dict] = []
+    _deposit_log: list[dict] = []   # records each injected deposit for SIP reporting
     trading_day_idx: dict = {}  # date -> index for time stops
     sorted_days = sorted(prices["date"].unique())
     for i, d in enumerate(sorted_days):
         trading_day_idx[d] = i
 
     for day, day_prices in prices.groupby("date", sort=True):
+        # ---- SIP deposit injection ----
+        # Cash is injected BEFORE exits/entries so the new capital can be deployed same day.
+        if deposits:
+            _dep = deposits.get(str(day), 0.0)
+            if _dep > 0.0:
+                cash += _dep
+                _deposit_log.append({
+                    "date": str(day),
+                    "amount": round(_dep, 2),
+                    "cash_after": round(cash, 2),
+                })
         day_prices = day_prices.sort_values("timestamp")
         day_idx = trading_day_idx[day]
 
@@ -1278,6 +1307,12 @@ def run_backtest_v2(
                     holdings_value = sum(pos["qty"] * marks_today.get(s, pos["avg_price"]) for s, pos in holdings.items())
                     current_equity = cash + holdings_value
 
+                    # Fee-efficiency gate: skip all new entries when free cash is below the minimum.
+                    # DP charge on sells (₹15.34) makes small positions very expensive on exit.
+                    # This does NOT gate pyramid adds — those are managed by the pyramid logic.
+                    if strategy.min_entry_cash is not None and cash < strategy.min_entry_cash:
+                        continue  # skip entire scan window for today; no new positions
+
                     for _, row in candidates.iterrows():
                         symbol = row["symbol"]
                         if symbol in holdings:
@@ -1422,4 +1457,5 @@ def run_backtest_v2(
         "equity_curve": equity_curve,
         "trades": trades,
         "open_positions": open_positions,
+        "deposits": _deposit_log,  # list of {"date", "amount", "cash_after"} — empty when no deposits
     }

@@ -63,6 +63,7 @@
         <a href="/symbols"  class="nav-link {% if p.startswith('/symbols') %}active{% endif %}">Symbols</a>
         <a href="/trades"   class="nav-link {% if p.startswith('/trades') %}active{% endif %}">Trades</a>
         <a href="/health"   class="nav-link {% if p.startswith('/health') %}active{% endif %}">Health</a>
+        <a href="/bot"      class="nav-link {% if p.startswith('/bot') %}active{% endif %}">Bot</a>
       </nav>
       <div class="flex items-center gap-2 shrink-0">
         <button type="button" class="theme-toggle" onclick="window.toggleTheme()" aria-label="Toggle theme">
@@ -92,12 +93,13 @@
   <!-- Mobile bottom nav -->
   <nav class="md:hidden fixed bottom-0 left-0 right-0 z-20"
        style="background: var(--surface); border-top: 1px solid var(--border);">
-    <div class="grid grid-cols-4 text-xs">
+    <div class="grid grid-cols-5 text-xs">
       {% set p = request.url.path %}
       <a href="/"        class="py-3 text-center {% if p == '/' %}text-accent{% else %}text-muted{% endif %}">Home</a>
       <a href="/symbols" class="py-3 text-center {% if p.startswith('/symbols') %}text-accent{% else %}text-muted{% endif %}">Symbols</a>
       <a href="/trades"  class="py-3 text-center {% if p.startswith('/trades') %}text-accent{% else %}text-muted{% endif %}">Trades</a>
       <a href="/health"  class="py-3 text-center {% if p.startswith('/health') %}text-accent{% else %}text-muted{% endif %}">Health</a>
+      <a href="/bot"     class="py-3 text-center {% if p.startswith('/bot') %}text-accent{% else %}text-muted{% endif %}">Bot</a>
     </div>
   </nav>
 </body>
