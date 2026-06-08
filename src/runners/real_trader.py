@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time as _time
+from datetime import date as _date
 
 from src.core.angel import AngelClient
 from src.core.config import settings
@@ -58,22 +59,51 @@ _TERMINAL = {"complete", "rejected", "cancelled"}
 
 
 # ---------- Angel session ----------
+#
+# Angel One's SmartConnect JWT expires daily (typically at midnight IST).
+# We handle this two ways:
+#
+#   1. PROACTIVE: track which IST calendar date the session was created on.
+#      If the current IST date differs from _session_date, force a re-login
+#      before the next tick (catches the midnight rollover cleanly).
+#
+#   2. REACTIVE: if any tick raises an auth-related exception (token / session /
+#      invalid / unauthorised), _reset_angel() clears the cached client so the
+#      next call to _angel() re-authenticates. This is the fallback for mid-day
+#      token revocations (e.g. Angel resets the session server-side).
+#
+# generateSession() itself is blocking (HTTP + TOTP); it runs in a thread so
+# the asyncio event loop is never stalled.
 
 _client: AngelClient | None = None
+_session_date: _date | None = None   # IST date of the last successful login
 
 
 async def _angel() -> AngelClient:
-    """Lazily log in once per process (SmartConnect login is blocking → thread)."""
-    global _client
-    if _client is None:
+    """Return a valid Angel One session, re-logging in when needed.
+
+    Re-logins when:
+      • First call (cold start)
+      • IST date has rolled over since the last login (daily token expiry)
+      • _reset_angel() was called after a reactive auth failure
+    """
+    global _client, _session_date
+    today_ist = now_ist().date()
+    if _client is None or _session_date != today_ist:
+        if _client is not None:
+            log.info("angel session: IST date rolled over — re-authenticating",
+                     extra={"session_date": str(_session_date), "today_ist": str(today_ist)})
         _client = await asyncio.to_thread(AngelClient.login)
-        log.info("angel session established")
+        _session_date = today_ist
+        log.info("angel session established", extra={"session_date": str(today_ist)})
     return _client
 
 
 def _reset_angel() -> None:
-    global _client
+    """Force re-login on the next _angel() call (reactive auth-failure recovery)."""
+    global _client, _session_date
     _client = None
+    _session_date = None
 
 
 # ---------- Small helpers ----------
@@ -402,6 +432,21 @@ async def main() -> None:
                 await heartbeat("real_trader", "sleeping", detail="market closed")
                 log.info("market closed, sleeping", extra={"wait_seconds": wait})
                 await asyncio.sleep(wait)
+
+                # When we wake up close to (or at) market open, pre-emptively
+                # re-authenticate so the FIRST tick of the day doesn't carry
+                # a stale yesterday-dated JWT. _angel() will re-login whenever
+                # the IST date has changed, so this is a no-op if we somehow
+                # wake within the same calendar day.
+                if is_market_open():
+                    try:
+                        await _angel()
+                        log.info("pre-market re-authentication OK",
+                                 extra={"session_date": str(_session_date)})
+                    except Exception as exc:  # noqa: BLE001
+                        log.exception("pre-market re-authentication failed — will retry on first tick",
+                                      extra={"error": str(exc)[:200]})
+                        _reset_angel()
                 continue
 
             cycle_start = _time.monotonic()
@@ -409,7 +454,8 @@ async def main() -> None:
                 await tick()
             except Exception as exc:  # noqa: BLE001
                 log.exception("tick errored")
-                # A session/token error clears the cached client so the next tick re-logs in.
+                # Reactive: a session/token error clears the cached client so
+                # the next tick re-authenticates automatically via _angel().
                 if any(w in str(exc).lower() for w in ("token", "session", "invalid", "unauthor")):
                     _reset_angel()
                 await heartbeat("real_trader", "error", detail=str(exc)[:200])
