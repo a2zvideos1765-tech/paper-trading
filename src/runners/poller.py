@@ -103,8 +103,8 @@ async def main() -> None:
                                        "tick_seconds": settings.poller_interval_seconds})
 
     # On boot, log in once. If credentials fail we exit loudly so PM2 restarts.
-    client = AngelClient.login()
-    log.info("angel login ok")
+    client = AngelClient.for_data()
+    log.info("angel login ok", extra={"account": client.account})
 
     try:
         while True:

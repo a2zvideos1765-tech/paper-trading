@@ -180,14 +180,23 @@ async def check_runner_heartbeats(r: Result) -> None:
 
 def check_angel_login(r: Result) -> None:
     print("Angel SmartAPI login")
-    try:
-        from src.core.angel import AngelClient
-        client = AngelClient.login()
-        r.ok("login + TOTP succeeded")
-    except SystemExit as exc:
-        r.fail("login failed", str(exc))
-    except Exception as exc:  # noqa: BLE001
-        r.fail("login crashed", str(exc))
+    from src.core.angel import AngelClient
+    from src.core.config import settings
+
+    def _try(account: int) -> None:
+        try:
+            AngelClient.login(account=account)
+            r.ok(f"account {account}: login + TOTP succeeded")
+        except SystemExit as exc:
+            r.fail(f"account {account}: login failed", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            r.fail(f"account {account}: login crashed", str(exc))
+
+    _try(1)
+    if settings.has_angel_account2:
+        _try(2)
+    else:
+        r.ok("account 2: not configured (optional — set ANGEL2_* in .env to add)")
 
 
 async def check_candles_present(r: Result) -> None:

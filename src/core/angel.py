@@ -22,7 +22,7 @@ import pandas as pd
 import pyotp
 from SmartApi.smartConnect import SmartConnect
 
-from src.core.config import settings
+from src.core.config import resolve_angel_account, settings
 
 
 # Map our internal interval strings to Angel's enum values.
@@ -41,34 +41,68 @@ def _clean_totp_secret(value: str) -> str:
     return value.strip().replace(" ", "").replace("-", "").upper()
 
 
+def _account_creds(account: int) -> tuple[str, str, str, str]:
+    """(api_key, client_code, password, totp_secret) for the given account number."""
+    if account == 1:
+        return (settings.angel_api_key, settings.angel_client_code,
+                settings.angel_password, settings.angel_totp_secret)
+    if account == 2:
+        if not settings.has_angel_account2:
+            raise SystemExit(
+                "Angel account 2 requested but ANGEL2_API_KEY / ANGEL2_CLIENT_CODE / "
+                "ANGEL2_PASSWORD / ANGEL2_TOTP_SECRET are not all set in .env"
+            )
+        return (settings.angel2_api_key, settings.angel2_client_code,
+                settings.angel2_password, settings.angel2_totp_secret)
+    raise SystemExit(f"Unknown Angel account {account!r} — only accounts 1 and 2 exist")
+
+
 @dataclass
 class AngelClient:
     smart: SmartConnect
+    account: int = 1
 
     @classmethod
-    def login(cls) -> "AngelClient":
+    def login(cls, account: int = 1) -> "AngelClient":
+        api_key, client_code, password, totp_secret = _account_creds(account)
+        env_prefix = "ANGEL2" if account == 2 else "ANGEL"
+
         # SmartConnect spams INFO; silence to keep our JSON logs clean.
         logging.disable(logging.CRITICAL)
 
-        secret = _clean_totp_secret(settings.angel_totp_secret)
+        secret = _clean_totp_secret(totp_secret)
         if secret.isdigit() and len(secret) == 6:
             raise SystemExit(
-                "ANGEL_TOTP_SECRET must be the QR/manual setup key, "
+                f"{env_prefix}_TOTP_SECRET must be the QR/manual setup key, "
                 "not the 6-digit OTP. Re-enable 2FA and copy the setup key."
             )
 
-        smart = SmartConnect(api_key=settings.angel_api_key)
+        smart = SmartConnect(api_key=api_key)
         totp = pyotp.TOTP(secret).now()
-        session = smart.generateSession(
-            settings.angel_client_code,
-            settings.angel_password,
-            totp,
-        )
+        session = smart.generateSession(client_code, password, totp)
         logging.disable(logging.NOTSET)
 
         if not session.get("status"):
-            raise SystemExit(f"Angel login failed: {session}")
-        return cls(smart=smart)
+            raise SystemExit(f"Angel login failed (account {account}): {session}")
+        return cls(smart=smart, account=account)
+
+    @classmethod
+    def for_data(cls) -> "AngelClient":
+        """Login with the market-data account (poller/backfill).
+
+        ANGEL_DATA_ACCOUNT='auto' (default) prefers account 2 when configured,
+        so adding ANGEL2_* creds moves candle fetching off the trading account."""
+        return cls.login(resolve_angel_account(
+            settings.angel_data_account, settings.has_angel_account2))
+
+    @classmethod
+    def for_trading(cls) -> "AngelClient":
+        """Login with the real-money trading account (real_trader).
+
+        ANGEL_TRADING_ACCOUNT defaults to '1' — the original funded account.
+        Trading never moves implicitly; switching requires an explicit env edit."""
+        return cls.login(resolve_angel_account(
+            settings.angel_trading_account, settings.has_angel_account2))
 
     # ------------------------------------------------------------------
     # Order placement + account reads (real-money trading).

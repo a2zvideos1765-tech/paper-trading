@@ -93,9 +93,10 @@ async def _angel() -> AngelClient:
         if _client is not None:
             log.info("angel session: IST date rolled over — re-authenticating",
                      extra={"session_date": str(_session_date), "today_ist": str(today_ist)})
-        _client = await asyncio.to_thread(AngelClient.login)
+        _client = await asyncio.to_thread(AngelClient.for_trading)
         _session_date = today_ist
-        log.info("angel session established", extra={"session_date": str(today_ist)})
+        log.info("angel session established",
+                 extra={"session_date": str(today_ist), "account": _client.account})
     return _client
 
 

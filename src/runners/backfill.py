@@ -97,8 +97,8 @@ async def main() -> None:
     await heartbeat("backfill", "ok", detail="starting")
 
     try:
-        client = AngelClient.login()
-        log.info("angel login ok")
+        client = AngelClient.for_data()
+        log.info("angel login ok", extra={"account": client.account})
 
         equities, indices = await load_universe()
         total = 0

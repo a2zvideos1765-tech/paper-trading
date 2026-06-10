@@ -40,6 +40,17 @@ class Settings:
     angel_password: str
     angel_totp_secret: str
 
+    # Optional second Angel One account. When fully configured, market-data
+    # fetching (poller/backfill) moves to it by default, leaving account 1
+    # dedicated to real trading — see ANGEL_DATA_ACCOUNT / ANGEL_TRADING_ACCOUNT.
+    angel2_api_key: str | None
+    angel2_client_code: str | None
+    angel2_password: str | None
+    angel2_totp_secret: str | None
+
+    angel_data_account: str     # 'auto' | '1' | '2' — account for candles/backfill
+    angel_trading_account: str  # '1' | '2' — account the real-money bot trades on
+
     web_host: str
     web_port: int
     dashboard_password: str
@@ -64,6 +75,33 @@ class Settings:
             f"@{self.pg_host}:{self.pg_port}/{self.pg_db}"
         )
 
+    @property
+    def has_angel_account2(self) -> bool:
+        return all([self.angel2_api_key, self.angel2_client_code,
+                    self.angel2_password, self.angel2_totp_secret])
+
+
+def resolve_angel_account(configured: str, has_account2: bool) -> int:
+    """Map an ANGEL_*_ACCOUNT selector ('auto' | '1' | '2') to an account number.
+
+    'auto' picks account 2 when it is fully configured, else account 1. Pure —
+    no settings access — so the routing logic is unit-testable.
+    """
+    v = (configured or "auto").strip().lower()
+    if v == "auto":
+        return 2 if has_account2 else 1
+    if v in ("1", "2"):
+        n = int(v)
+        if n == 2 and not has_account2:
+            raise RuntimeError(
+                "Angel account 2 selected but ANGEL2_API_KEY / ANGEL2_CLIENT_CODE / "
+                "ANGEL2_PASSWORD / ANGEL2_TOTP_SECRET are not all set in .env"
+            )
+        return n
+    raise RuntimeError(
+        f"Invalid Angel account selector {configured!r} — use 'auto', '1' or '2'"
+    )
+
 
 def load_settings() -> Settings:
     return Settings(
@@ -76,6 +114,12 @@ def load_settings() -> Settings:
         angel_client_code=_req("ANGEL_CLIENT_CODE"),
         angel_password=_req("ANGEL_PASSWORD"),
         angel_totp_secret=_req("ANGEL_TOTP_SECRET"),
+        angel2_api_key=(os.getenv("ANGEL2_API_KEY") or None),
+        angel2_client_code=(os.getenv("ANGEL2_CLIENT_CODE") or None),
+        angel2_password=(os.getenv("ANGEL2_PASSWORD") or None),
+        angel2_totp_secret=(os.getenv("ANGEL2_TOTP_SECRET") or None),
+        angel_data_account=_opt("ANGEL_DATA_ACCOUNT", "auto"),
+        angel_trading_account=_opt("ANGEL_TRADING_ACCOUNT", "1"),
         web_host=_opt("WEB_HOST", "127.0.0.1"),
         web_port=int(_opt("WEB_PORT", "8000")),
         dashboard_password=_req("DASHBOARD_PASSWORD"),
