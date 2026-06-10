@@ -229,16 +229,25 @@ async def api_bot_deposits() -> JSONResponse:
 @router.post("/api/bot/toggle")
 async def api_bot_toggle(request: Request) -> JSONResponse:
     require_admin(request)
-    body = await request.json() if await request.body() else {}
+    try:
+        body = await request.json()
+    except Exception:  # empty or malformed body → just flip current state
+        body = {}
     # Accept explicit {"enabled": true/false} or just flip current state
-    if "enabled" in body:
+    if isinstance(body, dict) and "enabled" in body:
         new_state = bool(body["enabled"])
     else:
         cur = await fetchrow("SELECT enabled FROM real_bot_state WHERE id = 1")
         new_state = not bool(cur["enabled"]) if cur else True
 
+    # Upsert so the toggle works even if sql/007's seed row is missing.
     await execute(
-        "UPDATE real_bot_state SET enabled = $1, updated_at = now(), updated_by = 'web' WHERE id = 1",
+        """
+        INSERT INTO real_bot_state (id, enabled, updated_at, updated_by)
+        VALUES (1, $1, now(), 'web')
+        ON CONFLICT (id) DO UPDATE
+          SET enabled = $1, updated_at = now(), updated_by = 'web'
+        """,
         new_state,
     )
     return JSONResponse({"enabled": new_state, "now_ist": now_ist().strftime("%Y-%m-%d %H:%M:%S IST")})

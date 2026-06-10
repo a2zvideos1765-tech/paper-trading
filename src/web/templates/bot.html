@@ -190,6 +190,11 @@
 (function () {
   "use strict";
 
+  // Escape broker/engine-derived strings before injecting via innerHTML —
+  // symbols, order reasons and Angel error text are external data.
+  const esc = s => String(s ?? "").replace(/[&<>"']/g,
+    c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
   // ---- status polling ----
   async function pollStatus() {
     try {
@@ -258,8 +263,8 @@
       };
       tbody.innerHTML = rows.map(h => `
         <tr class="border-b border-default hover:bg-surface2 transition-colors">
-          <td class="px-4 py-2 font-mono font-semibold text-default">${h.symbol}</td>
-          <td class="px-4 py-2 text-right">${h.qty}</td>
+          <td class="px-4 py-2 font-mono font-semibold text-default">${esc(h.symbol)}</td>
+          <td class="px-4 py-2 text-right">${Number(h.qty) || 0}</td>
           <td class="px-4 py-2 text-right font-mono">${fmt(h.avg_price)}</td>
           <td class="px-4 py-2 text-right font-mono">${fmt(h.ltp)}</td>
           <td class="px-4 py-2 text-right font-mono">${fmtPnl(h.pnl)}</td>
@@ -294,17 +299,18 @@
       tbody.innerHTML = rows.map(o => {
         const pillCls = STATUS_PILL[o.status] || "pill-muted";
         const sideCls = o.side === "BUY" ? "text-green-600 dark:text-green-400" : "text-red-500";
+        const qty = Number(o.qty) || 0, filled = Number(o.filled_qty) || 0;
         return `
         <tr class="border-b border-default hover:bg-surface2 transition-colors text-xs">
           <td class="px-4 py-2 font-mono text-muted whitespace-nowrap">${fmtT(o.requested_at)}</td>
-          <td class="px-4 py-2 font-mono font-semibold text-default">${o.symbol}</td>
-          <td class="px-4 py-2 font-semibold ${sideCls}">${o.side}</td>
-          <td class="px-4 py-2 text-right">${o.qty}${o.filled_qty > 0 && o.filled_qty < o.qty ? " <span class='text-muted'>(" + o.filled_qty + " filled)</span>" : ""}</td>
+          <td class="px-4 py-2 font-mono font-semibold text-default">${esc(o.symbol)}</td>
+          <td class="px-4 py-2 font-semibold ${sideCls}">${esc(o.side)}</td>
+          <td class="px-4 py-2 text-right">${qty}${filled > 0 && filled < qty ? " <span class='text-muted'>(" + filled + " filled)</span>" : ""}</td>
           <td class="px-4 py-2 text-right font-mono">${fmtP(o.requested_price)}</td>
           <td class="px-4 py-2 text-right font-mono">${fmtP(o.avg_fill_price)}</td>
-          <td class="px-4 py-2"><span class="pill text-[10px] ${pillCls}">${o.status}</span>${o.error ? '<div class="text-red-400 mt-0.5 truncate max-w-[12rem]" title="' + o.error + '">' + o.error.slice(0, 40) + '…</div>' : ""}</td>
-          <td class="px-4 py-2 font-mono text-muted">${o.angel_order_id || "—"}</td>
-          <td class="px-4 py-2 text-muted max-w-[14rem] truncate" title="${o.reason || ""}">${o.reason || "—"}</td>
+          <td class="px-4 py-2"><span class="pill text-[10px] ${pillCls}">${esc(o.status)}</span>${o.error ? '<div class="text-red-400 mt-0.5 truncate max-w-[12rem]" title="' + esc(o.error) + '">' + esc(o.error.slice(0, 40)) + '…</div>' : ""}</td>
+          <td class="px-4 py-2 font-mono text-muted">${esc(o.angel_order_id) || "—"}</td>
+          <td class="px-4 py-2 text-muted max-w-[14rem] truncate" title="${esc(o.reason)}">${esc(o.reason) || "—"}</td>
         </tr>`;
       }).join("");
     } catch (_) {}

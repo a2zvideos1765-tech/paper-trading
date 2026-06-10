@@ -98,6 +98,12 @@ class AngelClient:
         Defaults are CNC/delivery LIMIT, DAY validity — the swing-strategy bot
         prices each order at the engine's decided trade price. Not retried.
         """
+        # Exchanges reject LIMIT prices that aren't on the tick grid. NSE ticks are
+        # ₹0.01 (≤₹250 scrips) or ₹0.05 (above); a 0.05-multiple is valid in both
+        # bands and on BSE, so snap the engine's raw price to the nearest 0.05.
+        # Max deviation from the engine's decision: 2.5 paise.
+        tick = 0.05
+        limit_price = round(round(float(price) / tick) * tick, 2)
         params = {
             "variety": variety,
             "tradingsymbol": tradingsymbol,
@@ -107,7 +113,7 @@ class AngelClient:
             "ordertype": order_type,
             "producttype": product,
             "duration": duration,
-            "price": f"{float(price):.2f}",
+            "price": f"{limit_price:.2f}",
             "squareoff": "0",
             "stoploss": "0",
             "quantity": str(int(qty)),

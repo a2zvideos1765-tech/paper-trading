@@ -281,7 +281,9 @@ async def tail_logs(app: str = "real_trader", lines: int = 50) -> dict:
     Logs are JSON-per-line; returned as a list of parsed objects.
     """
     lines = max(1, min(lines, 500))
-    safe = re.sub(r"[^a-z0-9_\-]", "", app)  # sanitise app name
+    # Lowercase first, then strip anything path-like — blocks traversal while
+    # keeping "Real_Trader" → "real_trader" instead of mangling it.
+    safe = re.sub(r"[^a-z0-9_\-]", "", app.lower())
     if not safe:
         return {"error": "invalid app name"}
 
@@ -314,8 +316,14 @@ async def tail_logs(app: str = "real_trader", lines: int = 50) -> dict:
             "tail_lines": len(parsed), "entries": parsed}
 
 
+# `into` is blocked because `SELECT … INTO new_table` is DDL in Postgres.
 _BLOCKED_SQL = re.compile(
-    r"\b(insert|update|delete|drop|truncate|create|alter|grant|revoke|copy|vacuum|analyze)\b",
+    r"\b(insert|update|delete|drop|truncate|create|alter|grant|revoke|copy|vacuum|analyze|into|do|call|set|listen|notify)\b",
+    re.IGNORECASE,
+)
+# Server-side functions that can DoS, read files, or kill other sessions.
+_BLOCKED_FUNCS = re.compile(
+    r"\b(pg_sleep|pg_terminate_backend|pg_cancel_backend|pg_read_file|pg_read_binary_file|pg_ls_dir|lo_import|lo_export|dblink|set_config)\b",
     re.IGNORECASE,
 )
 
@@ -323,14 +331,17 @@ _BLOCKED_SQL = re.compile(
 async def run_sql(query: str, limit: int = 100) -> dict:
     """Run a read-only SELECT query against the platform DB and return results.
 
-    Rejects anything that contains DML/DDL keywords (INSERT, UPDATE, DELETE, DROP …).
-    Results are capped at `limit` rows (max 500). Use this for ad-hoc inspection only.
+    Rejects anything that contains DML/DDL keywords (INSERT, UPDATE, DELETE, DROP,
+    INTO …) or dangerous server-side functions. Results are capped at `limit` rows
+    (max 500). Use this for ad-hoc inspection only.
     """
     stripped = query.strip()
     if not stripped.upper().startswith("SELECT"):
         return {"error": "Only SELECT queries are allowed."}
     if _BLOCKED_SQL.search(stripped):
-        return {"error": "Query contains a blocked keyword (INSERT/UPDATE/DELETE/DROP etc.)."}
+        return {"error": "Query contains a blocked keyword (INSERT/UPDATE/DELETE/DROP/INTO etc.)."}
+    if _BLOCKED_FUNCS.search(stripped):
+        return {"error": "Query contains a blocked server-side function."}
     limit = max(1, min(limit, 500))
 
     # Append LIMIT if the query doesn't already have one, to prevent huge result sets.
@@ -422,8 +433,14 @@ async def toggle_bot(enabled: bool) -> dict:
     This is the only safe way to start/stop real trading without restarting the runner.
     """
     from src.core.db import execute
+    # Upsert so the toggle works even if sql/007's seed row is missing.
     await execute(
-        "UPDATE real_bot_state SET enabled=$1, updated_at=now(), updated_by='mcp' WHERE id=1",
+        """
+        INSERT INTO real_bot_state (id, enabled, updated_at, updated_by)
+        VALUES (1, $1, now(), 'mcp')
+        ON CONFLICT (id) DO UPDATE
+          SET enabled = $1, updated_at = now(), updated_by = 'mcp'
+        """,
         enabled,
     )
     log.info("mcp: toggle_bot", extra={"enabled": enabled})
@@ -515,15 +532,28 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# ---------- Lifespan (DB pool) ----------
+# ---------- Lifespan (DB pool + MCP session manager) ----------
 
 @asynccontextmanager
 async def _lifespan(_app):
+    """Outer lifespan for the mounted MCP app.
+
+    Starlette does NOT run the lifespan of mounted sub-apps, and the
+    streamable-http transport requires its StreamableHTTPSessionManager task
+    group to be running (otherwise every request 500s with "Task group is not
+    initialized"). So we run it here, alongside the DB pool — this is the
+    documented pattern for mounting FastMCP inside an existing ASGI server.
+    """
     await get_pool()
     log.info("mcp server started",
              extra={"host": settings.mcp_host, "port": settings.mcp_port,
                     "auth": "token set" if settings.mcp_token else "NO TOKEN (insecure)"})
-    yield
+    manager = getattr(mcp, "session_manager", None)
+    if manager is not None:
+        async with manager.run():
+            yield
+    else:  # very old SDK (SSE transport only) — no session manager to run
+        yield
     await close_pool()
 
 
@@ -532,24 +562,14 @@ async def _lifespan(_app):
 def build_app():
     """Return the Starlette ASGI app with auth middleware injected.
 
-    FastMCP exposes the underlying Starlette app through streamable_http_app() in
-    mcp >= 1.3. For older versions the attribute may differ — adjust if needed.
+    Prefers the streamable-http transport (mcp >= 1.9, what Claude connects to
+    at /mcp); falls back to the legacy SSE transport on older SDKs.
     """
-    # Set the lifespan on the FastMCP server so the DB pool is managed correctly.
     try:
-        # mcp >= 1.3: streamable-http transport app (preferred for Claude Desktop)
-        inner = mcp.streamable_http_app()
+        inner = mcp.streamable_http_app()  # serves at /mcp
     except AttributeError:
-        try:
-            # Some versions expose get_asgi_app()
-            inner = mcp.get_asgi_app()
-        except AttributeError:
-            raise RuntimeError(
-                "Cannot extract ASGI app from FastMCP. "
-                "Check that mcp[cli]>=1.3 is installed and the API hasn't changed."
-            )
+        inner = mcp.sse_app()              # legacy transport, serves at /sse
 
-    # Inject our lifespan (DB pool) and auth middleware on top.
     from starlette.applications import Starlette
     from starlette.routing import Mount
 
