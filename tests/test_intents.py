@@ -10,8 +10,8 @@ from __future__ import annotations
 from src.engine.real_executor import (
     count_stale_intents,
     intent_key,
-    is_sip_deposit,
     select_new_intents,
+    sip_deposit_amount,
 )
 
 
@@ -104,25 +104,33 @@ def test_count_stale_ignores_already_placed():
     assert count_stale_intents([old], {intent_key(old)}, "2026-06-16", max_age_days=1) == 0
 
 
-# ---- is_sip_deposit (phantom-deposit guard) ----
+# ---- sip_deposit_amount (net-value vs baseline) ----
 
-def test_real_deposit_detected():
-    # cash rose from a real ₹15k balance by ₹10k, no sell → genuine deposit
-    assert is_sip_deposit(15000.0, 25000.0, had_completed_sell=False) is True
-
-
-def test_rise_from_zero_is_not_a_deposit():
-    # the exact bug: a 0 snapshot (failed read) → next real read looks like +19k
-    assert is_sip_deposit(0.0, 19282.0, had_completed_sell=False) is False
+def test_genuine_topup_above_baseline_detected():
+    # net ₹25k vs baseline ₹20k (capital+deposits) → ₹5k deposit
+    assert sip_deposit_amount(25000.0, 20000.0) == 5000.0
 
 
-def test_no_baseline_is_not_a_deposit():
-    assert is_sip_deposit(None, 20000.0, had_completed_sell=False) is False
+def test_initial_funding_below_capital_is_not_a_deposit():
+    # the exact bug: account funded to ₹19,250 against ₹20k capital → NOT a deposit
+    assert sip_deposit_amount(19250.0, 20000.0) == 0.0
 
 
-def test_sell_explains_the_rise():
-    assert is_sip_deposit(5000.0, 12000.0, had_completed_sell=True) is False
+def test_exactly_at_baseline_is_not_a_deposit():
+    assert sip_deposit_amount(20000.0, 20000.0) == 0.0
 
 
-def test_small_rise_below_min_is_not_a_deposit():
-    assert is_sip_deposit(15000.0, 15300.0, had_completed_sell=False, min_amount=500.0) is False
+def test_small_excess_below_min_is_not_a_deposit():
+    assert sip_deposit_amount(20300.0, 20000.0, min_amount=500.0) == 0.0
+
+
+def test_none_net_is_not_a_deposit():
+    # failed funds read (no net) → never a deposit
+    assert sip_deposit_amount(None, 20000.0) == 0.0
+
+
+def test_baseline_includes_prior_deposits():
+    # after a real ₹5k deposit, baseline is ₹25k; net ₹25.1k is not a new deposit
+    assert sip_deposit_amount(25100.0, 25000.0, min_amount=500.0) == 0.0
+    # but a further ₹6k top-up (net ₹31k) is
+    assert sip_deposit_amount(31000.0, 25000.0) == 6000.0

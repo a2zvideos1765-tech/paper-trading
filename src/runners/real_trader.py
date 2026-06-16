@@ -34,7 +34,7 @@ from src.core.db import close_pool, conn, fetch, fetchrow, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import IST, is_market_open, now_ist, seconds_until_market_open
 from src.core.universe import load_universe
-from src.engine.real_executor import count_stale_intents, is_sip_deposit, select_new_intents
+from src.engine.real_executor import count_stale_intents, select_new_intents, sip_deposit_amount
 from src.engine.replay import (
     PortfolioRow,
     load_candles_window,
@@ -175,29 +175,32 @@ async def sync_funds(client: AngelClient) -> dict:
     net = _num(raw.get("net"), None)
     utilised = _num(raw.get("utiliseddebits"), None)
 
-    prev = await fetchrow(
-        "SELECT available_cash::float8 AS available_cash, as_of "
-        "FROM real_funds ORDER BY as_of DESC LIMIT 1"
+    # SIP deposit detection is net-value based: a deposit is money that lifts the
+    # account ABOVE its starting capital + deposits already recorded. The initial
+    # funding that *establishes* the capital is not a deposit (counting it on top
+    # of the seeded capital is what fabricated the ~₹19k phantom deposit).
+    hv = await fetchrow(
+        "SELECT COALESCE(SUM(qty * COALESCE(ltp, avg_price)), 0)::float8 AS v FROM real_holdings"
     )
-    prev_available = float(prev["available_cash"]) if prev is not None else None
-    # Cheap pre-check before the SELL lookup; full decision in is_sip_deposit
-    # (which rejects a rise from a ~zero baseline — the phantom-deposit guard).
-    if prev_available is not None and prev_available > 1.0 and (available - prev_available) >= MIN_DEPOSIT_DETECT:
-        sell = await fetchrow(
-            "SELECT 1 FROM real_orders "
-            "WHERE side = 'SELL' AND status = 'complete' AND updated_at > $1 LIMIT 1",
-            prev["as_of"],
+    holdings_value = float(hv["v"]) if hv else 0.0
+    account_net = available + holdings_value
+
+    base = await fetchrow(
+        "SELECT (COALESCE((SELECT SUM(capital) FROM portfolios WHERE live AND enabled), 0) "
+        "      + COALESCE((SELECT SUM(amount) FROM real_deposits), 0))::float8 AS b"
+    )
+    expected_baseline = float(base["b"]) if base else 0.0
+
+    dep = sip_deposit_amount(account_net, expected_baseline, MIN_DEPOSIT_DETECT)
+    if dep > 0.0:
+        await conn_execute(
+            "INSERT INTO real_deposits (amount, available_before, available_after, note) "
+            "VALUES ($1, $2, $3, $4)",
+            dep, expected_baseline, account_net,
+            "auto-detected: net value above starting capital + prior deposits",
         )
-        if is_sip_deposit(prev_available, available, had_completed_sell=sell is not None,
-                          min_amount=MIN_DEPOSIT_DETECT):
-            delta = available - prev_available
-            await conn_execute(
-                "INSERT INTO real_deposits (amount, available_before, available_after, note) "
-                "VALUES ($1, $2, $3, $4)",
-                delta, prev_available, available,
-                "auto-detected from available-cash increase",
-            )
-            log.info("SIP deposit detected", extra={"amount": delta, "available": available})
+        log.info("SIP deposit detected",
+                 extra={"amount": dep, "account_net": account_net, "baseline": expected_baseline})
 
     await conn_execute(
         "INSERT INTO real_funds (available_cash, net, utilised, raw) VALUES ($1, $2, $3, $4)",
@@ -377,8 +380,10 @@ async def tick() -> None:
     client = await _angel()
 
     # 1. Broker-state sync — always, even when the bot is OFF.
-    funds = await sync_funds(client)
+    # Holdings first: sync_funds uses the holdings market value to compute the
+    # account's net value for SIP-deposit detection, so it must be current.
     held = await sync_holdings(client)
+    funds = await sync_funds(client)
 
     # 2. Master switch.
     if not await bot_enabled():

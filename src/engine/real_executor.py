@@ -94,22 +94,26 @@ def count_stale_intents(
     return n
 
 
-def is_sip_deposit(
-    prev_available: float | None,
-    current_available: float,
-    had_completed_sell: bool,
+def sip_deposit_amount(
+    account_net: float | None,
+    expected_baseline: float,
     min_amount: float = 500.0,
-) -> bool:
-    """Whether a rise in broker cash should be recorded as a SIP deposit.
+) -> float:
+    """How much (if any) to record as a SIP deposit this tick — net-value based.
 
-    Guards against the false positive that fabricated a ~₹19k phantom deposit:
-    a jump UP from a ~zero previous balance is almost always recovery from a
-    failed/empty funds read (e.g. an auth hiccup returning no `availablecash`),
-    not money the user actually transferred in. A completed SELL since the last
-    snapshot also explains a rise, so that isn't a deposit either.
+    `account_net` is the account's total value (free cash + holdings market value);
+    `expected_baseline` is the seeded live capital plus deposits already recorded.
+    A genuine SIP top-up pushes net ABOVE that baseline; returns the excess (≥
+    min_amount) or 0.0.
+
+    Net-based detection deliberately ignores:
+      * the initial funding up to your capital — net never exceeds the baseline,
+        so establishing the ₹20k is NOT a deposit (this is what fabricated the
+        ~₹19k phantom deposit and inflated engine equity to ~₹39k);
+      * buys/sells — cash and holdings move opposite ways, net ~unchanged;
+      * failed/empty funds reads — net drops, never a deposit.
     """
-    if prev_available is None or prev_available <= 1.0:
-        return False
-    if had_completed_sell:
-        return False
-    return (current_available - prev_available) >= min_amount
+    if account_net is None:
+        return 0.0
+    excess = float(account_net) - float(expected_baseline)
+    return round(excess, 2) if excess >= min_amount else 0.0
