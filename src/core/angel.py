@@ -170,20 +170,40 @@ class AngelClient:
             "stoploss": "0",
             "quantity": str(int(qty)),
         }
-        resp = self.smart.placeOrder(params)
-        # SDK versions differ: some return the order-id string directly, others a
-        # dict {"status", "data": {"orderid": ...}}. Normalise to the id string.
+        # Prefer placeOrderFullResponse: plain placeOrder() returns None on a
+        # rejection and swallows Angel's reason, which is exactly why we only saw
+        # "empty order id". The full-response variant returns the dict with
+        # status / errorcode / message so failures are diagnosable. Both place
+        # exactly one order — still never retried.
+        full = getattr(self.smart, "placeOrderFullResponse", None)
+        resp = full(params) if full is not None else self.smart.placeOrder(params)
+
+        # Old SDK path: placeOrder returns the order-id string directly.
+        if isinstance(resp, str) and resp.strip():
+            return resp.strip()
+
         if isinstance(resp, dict):
-            if not resp.get("status", True):
-                raise RuntimeError(f"Angel placeOrder failed: {resp}")
+            if not resp.get("status", False):
+                # Surface Angel's actual rejection reason (e.g. RMS block, bad
+                # tradingsymbol, insufficient funds, no trading permission).
+                code = resp.get("errorcode") or resp.get("errorCode") or ""
+                msg = resp.get("message") or resp.get("data") or resp
+                raise RuntimeError(f"Angel placeOrder rejected [{code}]: {msg}")
             data = resp.get("data") or {}
-            order_id = data.get("orderid") or data.get("orderId")
-            if not order_id:
-                raise RuntimeError(f"Angel placeOrder returned no order id: {resp}")
-            return str(order_id)
-        if not resp:
-            raise RuntimeError("Angel placeOrder returned an empty order id")
-        return str(resp)
+            order_id = data.get("orderid") or data.get("orderId") if isinstance(data, dict) else None
+            if order_id:
+                return str(order_id)
+            raise RuntimeError(f"Angel placeOrder: status ok but no order id in {resp}")
+
+        # No dict and no string → SDK returned None/empty. Include the params so
+        # the cause (symbol/exchange/token/price) is visible in real_orders.error.
+        raise RuntimeError(
+            f"Angel placeOrder returned no response ({resp!r}). Verify the API key has "
+            f"order/trading permission and the params are valid: "
+            f"tradingsymbol={tradingsymbol!r} exchange={exchange!r} token={token!r} "
+            f"side={side} qty={int(qty)} price={limit_price:.2f} "
+            f"product={product} type={order_type} variety={variety}"
+        )
 
     def cancel_order(self, order_id: str, variety: str = "NORMAL") -> dict:
         """Cancel an open order by Angel order id."""

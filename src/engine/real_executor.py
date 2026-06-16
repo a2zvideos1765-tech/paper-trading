@@ -92,3 +92,28 @@ def count_stale_intents(
         if d < min_date and intent_key(t) not in existing_keys:
             n += 1
     return n
+
+
+def sip_deposit_amount(
+    account_net: float | None,
+    expected_baseline: float,
+    min_amount: float = 500.0,
+) -> float:
+    """How much (if any) to record as a SIP deposit this tick — net-value based.
+
+    `account_net` is the account's total value (free cash + holdings market value);
+    `expected_baseline` is the seeded live capital plus deposits already recorded.
+    A genuine SIP top-up pushes net ABOVE that baseline; returns the excess (≥
+    min_amount) or 0.0.
+
+    Net-based detection deliberately ignores:
+      * the initial funding up to your capital — net never exceeds the baseline,
+        so establishing the ₹20k is NOT a deposit (this is what fabricated the
+        ~₹19k phantom deposit and inflated engine equity to ~₹39k);
+      * buys/sells — cash and holdings move opposite ways, net ~unchanged;
+      * failed/empty funds reads — net drops, never a deposit.
+    """
+    if account_net is None:
+        return 0.0
+    excess = float(account_net) - float(expected_baseline)
+    return round(excess, 2) if excess >= min_amount else 0.0

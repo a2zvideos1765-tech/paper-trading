@@ -34,7 +34,7 @@ from src.core.db import close_pool, conn, fetch, fetchrow, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import IST, is_market_open, now_ist, seconds_until_market_open
 from src.core.universe import load_universe
-from src.engine.real_executor import count_stale_intents, select_new_intents
+from src.engine.real_executor import count_stale_intents, select_new_intents, sip_deposit_amount
 from src.engine.replay import (
     PortfolioRow,
     load_candles_window,
@@ -153,32 +153,54 @@ async def symbol_map() -> dict[str, dict]:
 async def sync_funds(client: AngelClient) -> dict:
     """Pull RMS funds, detect a SIP deposit vs the previous snapshot, persist a row."""
     raw = await asyncio.to_thread(client.get_funds)
-    available = _num(raw.get("availablecash"), 0.0) or 0.0
+
+    # A failed/empty funds read (auth hiccup, rate limit) returns {} → no
+    # 'availablecash' key. Writing a 0.0 snapshot here is what fabricated the
+    # ~₹19k phantom deposit: the next real reading looked like a giant deposit.
+    # So skip the write entirely and reuse the last good snapshot for this tick.
+    raw_cash = raw.get("availablecash") if isinstance(raw, dict) else None
+    if raw_cash is None:
+        log.warning("funds read returned no availablecash — skipping funds write this tick",
+                    extra={"raw": str(raw)[:200]})
+        last = await fetchrow(
+            "SELECT available_cash::float8 AS available_cash, net::float8 AS net, "
+            "utilised::float8 AS utilised FROM real_funds ORDER BY as_of DESC LIMIT 1"
+        )
+        if last is not None:
+            return {"available_cash": float(last["available_cash"]),
+                    "net": last["net"], "utilised": last["utilised"]}
+        return {"available_cash": 0.0, "net": None, "utilised": None}
+
+    available = float(_num(raw_cash, 0.0) or 0.0)
     net = _num(raw.get("net"), None)
     utilised = _num(raw.get("utiliseddebits"), None)
 
-    prev = await fetchrow(
-        "SELECT available_cash::float8 AS available_cash, as_of "
-        "FROM real_funds ORDER BY as_of DESC LIMIT 1"
+    # SIP deposit detection is net-value based: a deposit is money that lifts the
+    # account ABOVE its starting capital + deposits already recorded. The initial
+    # funding that *establishes* the capital is not a deposit (counting it on top
+    # of the seeded capital is what fabricated the ~₹19k phantom deposit).
+    hv = await fetchrow(
+        "SELECT COALESCE(SUM(qty * COALESCE(ltp, avg_price)), 0)::float8 AS v FROM real_holdings"
     )
-    if prev is not None:
-        delta = available - float(prev["available_cash"])
-        if delta >= MIN_DEPOSIT_DETECT:
-            # Only call it a deposit if no completed SELL since the last snapshot
-            # could explain the cash rise.
-            sell = await fetchrow(
-                "SELECT 1 FROM real_orders "
-                "WHERE side = 'SELL' AND status = 'complete' AND updated_at > $1 LIMIT 1",
-                prev["as_of"],
-            )
-            if sell is None:
-                await conn_execute(
-                    "INSERT INTO real_deposits (amount, available_before, available_after, note) "
-                    "VALUES ($1, $2, $3, $4)",
-                    delta, float(prev["available_cash"]), available,
-                    "auto-detected from available-cash increase",
-                )
-                log.info("SIP deposit detected", extra={"amount": delta, "available": available})
+    holdings_value = float(hv["v"]) if hv else 0.0
+    account_net = available + holdings_value
+
+    base = await fetchrow(
+        "SELECT (COALESCE((SELECT SUM(capital) FROM portfolios WHERE live AND enabled), 0) "
+        "      + COALESCE((SELECT SUM(amount) FROM real_deposits), 0))::float8 AS b"
+    )
+    expected_baseline = float(base["b"]) if base else 0.0
+
+    dep = sip_deposit_amount(account_net, expected_baseline, MIN_DEPOSIT_DETECT)
+    if dep > 0.0:
+        await conn_execute(
+            "INSERT INTO real_deposits (amount, available_before, available_after, note) "
+            "VALUES ($1, $2, $3, $4)",
+            dep, expected_baseline, account_net,
+            "auto-detected: net value above starting capital + prior deposits",
+        )
+        log.info("SIP deposit detected",
+                 extra={"amount": dep, "account_net": account_net, "baseline": expected_baseline})
 
     await conn_execute(
         "INSERT INTO real_funds (available_cash, net, utilised, raw) VALUES ($1, $2, $3, $4)",
@@ -358,8 +380,10 @@ async def tick() -> None:
     client = await _angel()
 
     # 1. Broker-state sync — always, even when the bot is OFF.
-    funds = await sync_funds(client)
+    # Holdings first: sync_funds uses the holdings market value to compute the
+    # account's net value for SIP-deposit detection, so it must be current.
     held = await sync_holdings(client)
+    funds = await sync_funds(client)
 
     # 2. Master switch.
     if not await bot_enabled():

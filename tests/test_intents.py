@@ -11,6 +11,7 @@ from src.engine.real_executor import (
     count_stale_intents,
     intent_key,
     select_new_intents,
+    sip_deposit_amount,
 )
 
 
@@ -101,3 +102,35 @@ def test_count_stale_counts_only_unplaced_older_than_window():
 def test_count_stale_ignores_already_placed():
     old = _trade("2026-06-10", symbol="OLD")
     assert count_stale_intents([old], {intent_key(old)}, "2026-06-16", max_age_days=1) == 0
+
+
+# ---- sip_deposit_amount (net-value vs baseline) ----
+
+def test_genuine_topup_above_baseline_detected():
+    # net ₹25k vs baseline ₹20k (capital+deposits) → ₹5k deposit
+    assert sip_deposit_amount(25000.0, 20000.0) == 5000.0
+
+
+def test_initial_funding_below_capital_is_not_a_deposit():
+    # the exact bug: account funded to ₹19,250 against ₹20k capital → NOT a deposit
+    assert sip_deposit_amount(19250.0, 20000.0) == 0.0
+
+
+def test_exactly_at_baseline_is_not_a_deposit():
+    assert sip_deposit_amount(20000.0, 20000.0) == 0.0
+
+
+def test_small_excess_below_min_is_not_a_deposit():
+    assert sip_deposit_amount(20300.0, 20000.0, min_amount=500.0) == 0.0
+
+
+def test_none_net_is_not_a_deposit():
+    # failed funds read (no net) → never a deposit
+    assert sip_deposit_amount(None, 20000.0) == 0.0
+
+
+def test_baseline_includes_prior_deposits():
+    # after a real ₹5k deposit, baseline is ₹25k; net ₹25.1k is not a new deposit
+    assert sip_deposit_amount(25100.0, 25000.0, min_amount=500.0) == 0.0
+    # but a further ₹6k top-up (net ₹31k) is
+    assert sip_deposit_amount(31000.0, 25000.0) == 6000.0
