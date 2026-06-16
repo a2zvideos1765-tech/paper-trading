@@ -10,6 +10,7 @@ from __future__ import annotations
 from src.engine.real_executor import (
     count_stale_intents,
     intent_key,
+    is_sip_deposit,
     select_new_intents,
 )
 
@@ -101,3 +102,27 @@ def test_count_stale_counts_only_unplaced_older_than_window():
 def test_count_stale_ignores_already_placed():
     old = _trade("2026-06-10", symbol="OLD")
     assert count_stale_intents([old], {intent_key(old)}, "2026-06-16", max_age_days=1) == 0
+
+
+# ---- is_sip_deposit (phantom-deposit guard) ----
+
+def test_real_deposit_detected():
+    # cash rose from a real ₹15k balance by ₹10k, no sell → genuine deposit
+    assert is_sip_deposit(15000.0, 25000.0, had_completed_sell=False) is True
+
+
+def test_rise_from_zero_is_not_a_deposit():
+    # the exact bug: a 0 snapshot (failed read) → next real read looks like +19k
+    assert is_sip_deposit(0.0, 19282.0, had_completed_sell=False) is False
+
+
+def test_no_baseline_is_not_a_deposit():
+    assert is_sip_deposit(None, 20000.0, had_completed_sell=False) is False
+
+
+def test_sell_explains_the_rise():
+    assert is_sip_deposit(5000.0, 12000.0, had_completed_sell=True) is False
+
+
+def test_small_rise_below_min_is_not_a_deposit():
+    assert is_sip_deposit(15000.0, 15300.0, had_completed_sell=False, min_amount=500.0) is False

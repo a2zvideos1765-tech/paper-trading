@@ -92,3 +92,24 @@ def count_stale_intents(
         if d < min_date and intent_key(t) not in existing_keys:
             n += 1
     return n
+
+
+def is_sip_deposit(
+    prev_available: float | None,
+    current_available: float,
+    had_completed_sell: bool,
+    min_amount: float = 500.0,
+) -> bool:
+    """Whether a rise in broker cash should be recorded as a SIP deposit.
+
+    Guards against the false positive that fabricated a ~₹19k phantom deposit:
+    a jump UP from a ~zero previous balance is almost always recovery from a
+    failed/empty funds read (e.g. an auth hiccup returning no `availablecash`),
+    not money the user actually transferred in. A completed SELL since the last
+    snapshot also explains a rise, so that isn't a deposit either.
+    """
+    if prev_available is None or prev_available <= 1.0:
+        return False
+    if had_completed_sell:
+        return False
+    return (current_available - prev_available) >= min_amount
