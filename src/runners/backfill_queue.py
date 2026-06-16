@@ -152,8 +152,8 @@ async def main() -> None:
             await heartbeat("backfill_queue", "ok", detail="queue empty")
             return
 
-        client = AngelClient.login()
-        log.info("angel login ok")
+        client = AngelClient.for_data()
+        log.info("angel login ok", extra={"account": client.account})
 
         while True:
             if _past_deadline(started):

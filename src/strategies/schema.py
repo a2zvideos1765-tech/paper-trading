@@ -235,6 +235,12 @@ FIELD_SCHEMA: dict[str, dict[str, Any]] = {
         "kind": "float", "group": "Sizing",
         "doc": "Half-life (days) at or above which no boost is applied (factor = 1.0).",
     },
+    "min_entry_cash": {
+        "kind": "optional_float", "group": "Sizing",
+        "doc": "SIP fee-efficiency gate: skip ALL new entries on days when free cash < this (₹). "
+               "Avoids tiny positions where the ₹15.34 DP sell charge is an outsized % of turnover. "
+               "Has no effect on pyramid adds or exits. None = disabled.",
+    },
 
     # Adaptive exits / VIX blend
     "vix_blend_enabled": {

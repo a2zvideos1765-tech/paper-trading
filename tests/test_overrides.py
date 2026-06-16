@@ -188,6 +188,18 @@ def test_validate_time_stop_positive():
     assert "time_stop_days" not in validate(_strat(time_stop_days=10))
 
 
+def test_coerce_min_entry_cash_optional():
+    assert coerce({"min_entry_cash": None})["min_entry_cash"] is None
+    assert coerce({"min_entry_cash": 5000})["min_entry_cash"] == 5000.0
+
+
+def test_validate_min_entry_cash_must_be_positive():
+    assert "min_entry_cash" in validate(_strat(min_entry_cash=0))
+    assert "min_entry_cash" in validate(_strat(min_entry_cash=-100))
+    assert "min_entry_cash" not in validate(_strat(min_entry_cash=5000))
+    assert "min_entry_cash" not in validate(_strat(min_entry_cash=None))
+
+
 # ---------- coerce_and_apply() ----------
 
 def test_coerce_and_apply_empty_returns_base_unchanged():

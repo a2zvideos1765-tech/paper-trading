@@ -248,6 +248,10 @@ def validate(strategy: StrategyV2) -> dict[str, str]:
     if strategy.mr_halflife_fast_days > strategy.mr_halflife_slow_days:
         errs["mr_halflife_fast_days"] = "must be ≤ mr_halflife_slow_days"
 
+    # min_entry_cash (SIP gate) must be positive when set
+    if strategy.min_entry_cash is not None and strategy.min_entry_cash <= 0:
+        errs["min_entry_cash"] = "must be > 0 (it's a minimum free-cash floor for new entries)"
+
     # exit_tiers_bear, when set, follows the same rules as exit_tiers
     if strategy.exit_tiers_bear:
         last_t = -float("inf")

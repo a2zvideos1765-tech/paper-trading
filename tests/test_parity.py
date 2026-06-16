@@ -120,6 +120,52 @@ def test_engine_is_deterministic():
     assert r1["summary"] == r2["summary"]
 
 
+def test_sip_deposit_injection_funds_a_later_entry():
+    """SIP: a mid-run deposit (passed via deposits={date: amount}) injects cash
+    before that day's exits/entries, so an entry that was unaffordable becomes
+    affordable. Also confirms the engine returns a non-empty `deposits` log."""
+    from dataclasses import replace
+    days = _trading_days(datetime(2025, 1, 1).date(), 60)
+    closes = [100.0] * 25 + [94.0] + [94.0 + (145.0 - 94.0) * ((i + 1) / 30) for i in range(30)]
+    while len(closes) < len(days):
+        closes.append(closes[-1])
+    df = _build_history_one_symbol("ACME", list(zip(days, closes)))
+
+    # Start near-broke so the day-26 entry can't fire (S6 needs ~₹10k).
+    base = replace(get("S6_tiered_exit"), starting_cash=500.0)
+    r_nodep = run_backtest_v2(df, base, ChargeConfigV2())
+    assert not any(t["side"] == "BUY" for t in r_nodep["trades"]), "too poor to buy without a deposit"
+    assert r_nodep["deposits"] == [], "no deposits → empty deposit log"
+
+    # Inject ₹50k on the drop day → the entry is now affordable.
+    drop_day = str(days[25])
+    r_dep = run_backtest_v2(df, base, ChargeConfigV2(), deposits={drop_day: 50_000.0})
+    assert any(t["side"] == "BUY" for t in r_dep["trades"]), "deposit should fund the entry"
+    assert r_dep["deposits"], "deposit log should record the injection"
+    assert r_dep["deposits"][0]["amount"] == 50_000.0
+    assert r_dep["deposits"][0]["date"] == drop_day
+
+
+def test_min_entry_cash_gates_new_entries():
+    """SIP fee gate: when free cash < min_entry_cash, NO new entries fire that day.
+    Setting the floor above available cash blocks all buys; disabling it lets the
+    same entry through — proving the gate is the only difference."""
+    from dataclasses import replace
+    days = _trading_days(datetime(2025, 1, 1).date(), 60)
+    closes = [100.0] * 25 + [94.0] + [94.0 + (145.0 - 94.0) * ((i + 1) / 30) for i in range(30)]
+    while len(closes) < len(days):
+        closes.append(closes[-1])
+    df = _build_history_one_symbol("ACME", list(zip(days, closes)))
+
+    base = get("S6_tiered_exit")  # starting_cash 100_000
+    gated = replace(base, min_entry_cash=200_000.0)  # floor above all available cash
+    rg = run_backtest_v2(df, gated, ChargeConfigV2())
+    assert not any(t["side"] == "BUY" for t in rg["trades"]), "gate should block every new entry"
+
+    rb = run_backtest_v2(df, base, ChargeConfigV2())  # gate disabled (None)
+    assert any(t["side"] == "BUY" for t in rb["trades"]), "without the gate the entry fires"
+
+
 def test_capital_binding_changes_only_qty_not_signals():
     """Two replays of the same strategy with different starting_cash should fire
     BUYs at the same prices/dates — only the qty differs (capped by cash)."""
