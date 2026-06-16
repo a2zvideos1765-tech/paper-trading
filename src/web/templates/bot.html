@@ -186,6 +186,32 @@
   </div>
 </section>
 
+{% if not is_viewer %}
+<!-- Runner logs (admin only) -->
+<section class="card-2 mb-5 overflow-hidden">
+  <div class="px-4 py-3 border-b border-default flex items-center justify-between gap-3 flex-wrap">
+    <span class="text-sm font-semibold text-default">Runner Logs</span>
+    <div class="flex items-center gap-2 text-xs">
+      <select id="log-app" class="input text-xs py-1">
+        <option value="real_trader">real_trader (bot)</option>
+        <option value="poller">poller (data feed)</option>
+        <option value="trader">trader (paper)</option>
+      </select>
+      <label class="flex items-center gap-1 text-muted">
+        <input id="log-autorefresh" type="checkbox" checked> auto
+      </label>
+      <button id="log-refresh" class="btn-ghost text-xs">Refresh</button>
+      <span id="log-meta" class="text-muted"></span>
+    </div>
+  </div>
+  <div id="log-box"
+       class="font-mono text-[11px] leading-relaxed overflow-auto p-3"
+       style="max-height: 22rem; background: var(--surface);">
+    <div class="text-muted">Loading…</div>
+  </div>
+</section>
+{% endif %}
+
 <script>
 (function () {
   "use strict";
@@ -343,16 +369,70 @@
     }
   };
 
+  // ---- logs (admin only) ----
+  const LEVEL_CLS = {
+    DEBUG:    "text-muted",
+    INFO:     "text-default",
+    WARNING:  "text-amber-500 dark:text-amber-400",
+    ERROR:    "text-red-500",
+    CRITICAL: "text-red-500 font-semibold",
+  };
+  // Keys we render inline as the message; everything else becomes the dim suffix.
+  const LOG_CORE = new Set(["ts", "level", "logger", "msg", "raw"]);
+
+  async function pollLogs() {
+    const box = document.getElementById("log-box");
+    if (!box) return;  // viewer session — panel not rendered
+    const appSel = document.getElementById("log-app");
+    const app = appSel ? appSel.value : "real_trader";
+    try {
+      const r = await fetch(`/api/bot/logs?app=${encodeURIComponent(app)}&lines=120`);
+      if (!r.ok) { box.innerHTML = '<div class="text-red-500">' + esc(await r.text()) + '</div>'; return; }
+      const d = await r.json();
+      const meta = document.getElementById("log-meta");
+      if (meta) meta.textContent = d.error ? "" : `${d.tail_lines}/${d.total_lines} lines`;
+      if (d.error) { box.innerHTML = '<div class="text-muted">' + esc(d.error) + '</div>'; return; }
+      if (!d.entries || !d.entries.length) { box.innerHTML = '<div class="text-muted">No log lines.</div>'; return; }
+
+      const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.innerHTML = d.entries.map(e => {
+        if (e.raw !== undefined) return '<div class="text-muted">' + esc(e.raw) + "</div>";
+        const lvl = e.level || "INFO";
+        const cls = LEVEL_CLS[lvl] || "text-default";
+        // ts is UTC ISO from the formatter → show IST HH:MM:SS.
+        let t = "";
+        if (e.ts) { const dt = new Date(e.ts); if (!isNaN(dt)) t = dt.toLocaleTimeString("en-IN", {hour12: false, timeZone: "Asia/Kolkata"}); }
+        const extras = Object.keys(e).filter(k => !LOG_CORE.has(k))
+          .map(k => `${esc(k)}=${esc(typeof e[k] === "object" ? JSON.stringify(e[k]) : e[k])}`).join("  ");
+        return `<div class="${cls}"><span class="text-muted">${esc(t)}</span> `
+             + `<span class="opacity-70">[${esc(lvl)}]</span> ${esc(e.msg)}`
+             + (extras ? ` <span class="text-muted opacity-80">${extras}</span>` : "")
+             + `</div>`;
+      }).join("");
+      if (wasNearBottom) box.scrollTop = box.scrollHeight;  // keep pinned to latest
+    } catch (_) {}
+  }
+
+  const logApp = document.getElementById("log-app");
+  if (logApp) logApp.addEventListener("change", pollLogs);
+  const logRefresh = document.getElementById("log-refresh");
+  if (logRefresh) logRefresh.addEventListener("click", pollLogs);
+
   // ---- initial + interval ----
   pollStatus();
   pollFunds();
   pollHoldings();
   pollOrders();
+  pollLogs();
 
   setInterval(pollStatus, 15_000);    // status every 15s
   setInterval(pollFunds, 30_000);     // funds every 30s
   setInterval(pollHoldings, 30_000);  // holdings every 30s
   setInterval(pollOrders, 20_000);    // orders every 20s
+  setInterval(() => {                  // logs every 10s, if auto is checked
+    const auto = document.getElementById("log-autorefresh");
+    if (auto && auto.checked) pollLogs();
+  }, 10_000);
 })();
 </script>
 {% endblock %}

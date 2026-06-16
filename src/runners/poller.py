@@ -65,6 +65,7 @@ async def poll_once(client: AngelClient) -> None:
 
     Universe is re-read every cycle so symbol additions/removals from /symbols
     take effect within ~60s with no restart needed."""
+    t0 = time.monotonic()
     equities, _indices = await load_universe()
     specs = equities  # poller only fetches equities at 5m; indices are 1d via backfill
     now = now_ist()
@@ -93,8 +94,21 @@ async def poll_once(client: AngelClient) -> None:
         # 1.25s pause between symbols mirrors algo project's rate-limit headroom.
         await asyncio.sleep(1.25)
 
-    await heartbeat("poller", "ok", detail=f"upserted {total} candle rows")
-    log.info("poll cycle done", extra={"upserted": total, "symbols": len(specs)})
+    elapsed = time.monotonic() - t0
+    interval = settings.poller_interval_seconds
+    # If a full sweep takes longer than the tick interval, live candles arrive
+    # late — the cause of "stale" signals. Surface it loudly so it's visible on
+    # /health and in the bot log panel instead of silently lagging.
+    slow = elapsed > interval
+    detail = f"{total} rows · {len(specs)} symbols · {elapsed:.0f}s/cycle"
+    if slow:
+        detail += f" · SLOW (> {interval}s tick — candles lagging real-time)"
+        log.warning("poll cycle slower than tick interval — candles lag real-time",
+                    extra={"elapsed_s": round(elapsed, 1), "interval_s": interval,
+                           "symbols": len(specs)})
+    await heartbeat("poller", "ok", detail=detail)
+    log.info("poll cycle done",
+             extra={"upserted": total, "symbols": len(specs), "elapsed_s": round(elapsed, 1)})
 
 
 async def main() -> None:

@@ -23,8 +23,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.core.db import execute, fetch, fetchrow
+from src.core.logtail import read_log_tail
 from src.core.time import IST, is_market_open, now_ist
 from src.web.auth import require_admin
+
+
+# Apps whose logs are viewable from /bot (the runners relevant to live trading).
+_BOT_LOG_APPS = {"real_trader", "poller", "trader"}
 
 
 router = APIRouter()
@@ -222,6 +227,21 @@ async def api_bot_deposits() -> JSONResponse:
         }
         for r in rows
     ])
+
+
+# ---------- logs ----------
+
+@router.get("/api/bot/logs")
+async def api_bot_logs(request: Request, app: str = "real_trader", lines: int = 120) -> JSONResponse:
+    """Tail a live-trading runner's structured log for the on-page debug panel.
+
+    Admin-only: logs can carry order detail and error text. `app` is restricted to
+    the live-trading runners so this can't read arbitrary log files."""
+    require_admin(request)
+    if app not in _BOT_LOG_APPS:
+        app = "real_trader"
+    lines = max(1, min(lines, 500))
+    return JSONResponse(read_log_tail(app, lines))
 
 
 # ---------- toggle ----------
