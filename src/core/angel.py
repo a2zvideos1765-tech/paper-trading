@@ -25,6 +25,24 @@ from SmartApi.smartConnect import SmartConnect
 from src.core.config import resolve_angel_account, settings
 
 
+log = logging.getLogger("angel")
+
+
+class AngelSessionError(RuntimeError):
+    """Angel returned an auth/session failure (e.g. expired daily JWT).
+
+    Raised by data calls so a long-running runner can catch it and re-login
+    instead of silently treating an auth failure as 'no data' — the bug that let
+    the poller write 0 rows all day after its token expired at midnight."""
+
+
+# Substrings in Angel's error message/code that mean "your session is no longer valid".
+_AUTH_FAIL_HINTS = (
+    "token", "session", "invalid", "unauthor", "expired",
+    "access denied", "ag8001", "ag8002", "ag8003",
+)
+
+
 # Map our internal interval strings to Angel's enum values.
 INTERVAL_MAP = {
     "1m":  "ONE_MINUTE",
@@ -241,8 +259,19 @@ class AngelClient:
             "todate":   to_dt.strftime("%Y-%m-%d %H:%M"),
         }
         response = _get_candle_with_retry(self.smart, params, max_retries=max_retries)
-        if not response.get("status") or not response.get("data"):
-            return pd.DataFrame(columns=["timestamp", "symbol", "open", "high", "low", "close", "volume"])
+        empty = pd.DataFrame(columns=["timestamp", "symbol", "open", "high", "low", "close", "volume"])
+        if not response.get("status"):
+            # status=false is an ERROR, not "no data". Distinguish an expired
+            # session (re-login needed) from a benign rejection so the caller can
+            # react instead of silently writing nothing.
+            msg = str(response.get("message") or response.get("errorcode") or response)
+            if any(h in msg.lower() for h in _AUTH_FAIL_HINTS):
+                raise AngelSessionError(f"{symbol}: {msg}")
+            log.warning("getCandleData status=false",
+                        extra={"symbol": symbol, "angel_message": msg[:200]})
+            return empty
+        if not response.get("data"):
+            return empty  # genuine no-data (off-hours / holiday / illiquid bar)
         df = pd.DataFrame(
             response["data"],
             columns=["timestamp", "open", "high", "low", "close", "volume"],

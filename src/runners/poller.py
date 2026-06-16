@@ -27,7 +27,7 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 
-from src.core.angel import AngelClient
+from src.core.angel import AngelClient, AngelSessionError
 from src.core.config import settings
 from src.core.db import close_pool, conn, get_pool, heartbeat
 from src.core.logging import setup_logging
@@ -37,6 +37,30 @@ from src.core.universe import load_universe
 
 log = setup_logging("poller")
 INTERVAL = "5m"  # MUST match runners/trader.py CANDLE_INTERVAL and load_history.py default.
+
+
+# Angel session, re-authenticated daily. The SmartConnect JWT expires at midnight
+# IST; a process that logs in once and never refreshes will, after expiry, get
+# auth-failure responses that look like "no data" — which is exactly how the poller
+# silently wrote 0 rows all day. We track the login date and re-login on rollover.
+_client: AngelClient | None = None
+_session_date = None
+
+
+def _get_client() -> AngelClient:
+    global _client, _session_date
+    today = now_ist().date()
+    if _client is None or _session_date != today:
+        _client = AngelClient.for_data()
+        _session_date = today
+        log.info("angel login ok", extra={"account": _client.account, "session_date": str(today)})
+    return _client
+
+
+def _reset_client() -> None:
+    global _client, _session_date
+    _client = None
+    _session_date = None
 
 
 async def upsert_bars(symbol: str, df) -> int:
@@ -86,6 +110,10 @@ async def poll_once(client: AngelClient) -> None:
                 from_dt=since.replace(tzinfo=None),
                 to_dt=until.replace(tzinfo=None),
             )
+        except AngelSessionError:
+            # The daily token has expired. Don't log it 57 times and keep writing
+            # zero — bubble up so main() re-logs in and retries next cycle.
+            raise
         except Exception as exc:  # noqa: BLE001
             log.error("poll failed", extra={"symbol": spec.symbol, "err": str(exc)})
             continue
@@ -116,9 +144,9 @@ async def main() -> None:
     log.info("poller starting", extra={"interval": INTERVAL,
                                        "tick_seconds": settings.poller_interval_seconds})
 
-    # On boot, log in once. If credentials fail we exit loudly so PM2 restarts.
-    client = AngelClient.for_data()
-    log.info("angel login ok", extra={"account": client.account})
+    # Log in eagerly so credential problems surface immediately (PM2 restarts on
+    # a hard exit). Subsequent ticks re-auth automatically at the IST date rollover.
+    _get_client()
 
     try:
         while True:
@@ -131,7 +159,15 @@ async def main() -> None:
 
             cycle_start = time.monotonic()
             try:
-                await poll_once(client)
+                # _get_client() re-logs in if the daily token rolled over.
+                await poll_once(_get_client())
+            except AngelSessionError as exc:
+                # Token expired mid-session — drop the client so the next cycle
+                # re-authenticates, and make the failure loud (not a silent 0 rows).
+                log.warning("angel session expired — re-login queued for next cycle",
+                            extra={"err": str(exc)[:200]})
+                _reset_client()
+                await heartbeat("poller", "error", detail="angel session expired; re-login queued")
             except Exception as exc:  # noqa: BLE001
                 log.exception("poll cycle errored")
                 await heartbeat("poller", "error", detail=str(exc)[:200])
