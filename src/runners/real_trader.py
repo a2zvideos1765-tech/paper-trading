@@ -34,7 +34,7 @@ from src.core.db import close_pool, conn, fetch, fetchrow, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import IST, is_market_open, now_ist, seconds_until_market_open
 from src.core.universe import load_universe
-from src.engine.real_executor import select_new_intents
+from src.engine.real_executor import count_stale_intents, select_new_intents
 from src.engine.replay import (
     PortfolioRow,
     load_candles_window,
@@ -387,6 +387,7 @@ async def tick() -> None:
     vix = await load_index_close("INDIA_VIX", interval="1d")
 
     total_placed = 0
+    total_stale = 0
     for p in portfolios:
         try:
             strategy = get_strategy(p.strategy_id)
@@ -400,10 +401,21 @@ async def tick() -> None:
             if result.get("validation_errors"):
                 continue
 
-            # Diff intents → place real orders for today's new signals.
+            # Diff intents → place real orders for recent new signals (within the
+            # configured age window — absorbs signals whose candle arrived late).
             existing = await existing_intent_keys(p.id)
-            new_intents = select_new_intents(result["trades"], existing, today_str)
+            max_age = settings.real_trader_intent_max_age_days
+            new_intents = select_new_intents(result["trades"], existing, today_str, max_age_days=max_age)
             total_placed += await place_new_orders(client, p, sym_map, new_intents)
+
+            # Surface signals too old to place, so a skipped entry is visible
+            # rather than looking like a silent miss.
+            stale = count_stale_intents(result["trades"], existing, today_str, max_age_days=max_age)
+            total_stale += stale
+            if stale:
+                log.info("stale signals skipped (older than placement window)",
+                         extra={"portfolio_id": p.id, "portfolio_name": p.name,
+                                "count": stale, "max_age_days": max_age})
 
             # Reconcile any still-open orders against the broker.
             await reconcile_open_orders(client, p.id)
@@ -411,9 +423,10 @@ async def tick() -> None:
             log.exception("live portfolio tick failed",
                           extra={"portfolio_id": p.id, "portfolio_name": p.name})
 
+    stale_note = f", {total_stale} stale skipped" if total_stale else ""
     await heartbeat("real_trader", "ok",
-                    detail=f"bot ON — {len(portfolios)} live pf, {total_placed} new order(s), "
-                           f"cash ₹{funds['available_cash']:,.0f}")
+                    detail=f"bot ON — {len(portfolios)} live pf, {total_placed} new order(s)"
+                           f"{stale_note}, cash ₹{funds['available_cash']:,.0f}")
 
 
 # ---------- Loop ----------

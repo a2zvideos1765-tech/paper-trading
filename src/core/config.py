@@ -61,6 +61,11 @@ class Settings:
     trader_interval_seconds: int
     trader_offset_seconds: int
 
+    # How many calendar days back the real bot may still place an engine signal.
+    # 1 (default) = today or yesterday, so a signal whose candle arrived late
+    # (after market close) is still placed next session. 0 = strict today-only.
+    real_trader_intent_max_age_days: int
+
     log_level: str
     log_dir: Path
 
@@ -128,6 +133,7 @@ def load_settings() -> Settings:
         poller_interval_seconds=int(_opt("POLLER_INTERVAL_SECONDS", "60")),
         trader_interval_seconds=int(_opt("TRADER_INTERVAL_SECONDS", "60")),
         trader_offset_seconds=int(_opt("TRADER_OFFSET_SECONDS", "5")),
+        real_trader_intent_max_age_days=int(_opt("REAL_TRADER_INTENT_MAX_AGE_DAYS", "1")),
         log_level=_opt("LOG_LEVEL", "INFO").upper(),
         log_dir=REPO_ROOT / _opt("LOG_DIR", "logs"),
         mcp_token=(os.getenv("MCP_TOKEN") or None),
