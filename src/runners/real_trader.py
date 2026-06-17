@@ -34,7 +34,12 @@ from src.core.db import close_pool, conn, fetch, fetchrow, get_pool, heartbeat
 from src.core.logging import setup_logging
 from src.core.time import IST, is_market_open, now_ist, seconds_until_market_open
 from src.core.universe import load_universe
-from src.engine.real_executor import count_stale_intents, select_new_intents, sip_deposit_amount
+from src.engine.real_executor import (
+    count_stale_intents,
+    scan_time_elapsed,
+    select_new_intents,
+    sip_deposit_amount,
+)
 from src.engine.replay import (
     PortfolioRow,
     load_candles_window,
@@ -430,7 +435,23 @@ async def tick() -> None:
             existing = await existing_intent_keys(p.id)
             max_age = settings.real_trader_intent_max_age_days
             new_intents = select_new_intents(result["trades"], existing, today_str, max_age_days=max_age)
-            total_placed += await place_new_orders(client, p, sym_map, new_intents)
+
+            # Don't act on TODAY's scan entries until their scan time has passed —
+            # before then the engine is evaluating the scan on a provisional latest
+            # bar (e.g. an 11:20 bar standing in for the 14:00 scan), so the price
+            # isn't final. Past days are already complete, so they're not gated.
+            now_hhmm = now_ist().strftime("%H:%M")
+            ready, provisional = [], 0
+            for key, trade in new_intents:
+                if str(trade["date"]) == today_str and not scan_time_elapsed(trade["reason"], now_hhmm):
+                    provisional += 1
+                    continue
+                ready.append((key, trade))
+            if provisional:
+                log.info("scan entries waiting for scan time (provisional, not placed)",
+                         extra={"portfolio_id": p.id, "count": provisional, "now": now_hhmm})
+
+            total_placed += await place_new_orders(client, p, sym_map, ready)
 
             # Surface signals too old to place, so a skipped entry is visible
             # rather than looking like a silent miss.

@@ -10,6 +10,7 @@ from __future__ import annotations
 from src.engine.real_executor import (
     count_stale_intents,
     intent_key,
+    scan_time_elapsed,
     select_new_intents,
     sip_deposit_amount,
 )
@@ -134,3 +135,29 @@ def test_baseline_includes_prior_deposits():
     assert sip_deposit_amount(25100.0, 25000.0, min_amount=500.0) == 0.0
     # but a further ₹6k top-up (net ₹31k) is
     assert sip_deposit_amount(31000.0, 25000.0) == 6000.0
+
+
+# ---- scan_time_elapsed (don't front-run the scan time) ----
+
+def test_scan_entry_before_scan_time_not_ready():
+    # 14:00 scan evaluated at 11:20 is provisional → not ready
+    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "11:20") is False
+
+
+def test_scan_entry_at_scan_time_ready():
+    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "14:00") is True
+
+
+def test_scan_entry_after_scan_time_ready():
+    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "15:05") is True
+
+
+def test_earlier_scan_window_ready_at_later_time():
+    assert scan_time_elapsed("entry_scan_11:00_drop_-3%", "11:20") is True
+
+
+def test_non_scan_reasons_always_ready():
+    # pyramid adds / exits act on the current bar by design
+    assert scan_time_elapsed("pyramid_avg_-10%_lvl1", "09:30") is True
+    assert scan_time_elapsed("target_+25%_tier1", "09:30") is True
+    assert scan_time_elapsed("", "09:30") is True
