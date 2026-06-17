@@ -14,7 +14,31 @@ get placed the next session.
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
+
+
+# Matches the engine's scan-entry reason, e.g. "entry_scan_14:00_drop_-3%".
+_SCAN_REASON_RE = re.compile(r"entry_scan_(\d{2}:\d{2})")
+
+
+def scan_time_elapsed(reason: str, now_hhmm: str) -> bool:
+    """For a scan-mode entry, True only once its scan window time has passed today.
+
+    The engine evaluates a "14:00 scan" on the latest available bar *before or at*
+    14:00. On the current, incomplete day that is whatever the most recent bar is
+    (e.g. 11:20) — so the entry is PROVISIONAL: its price and even whether it fires
+    will change as more bars arrive, until 14:00 finalises it. Placing a real order
+    before then front-runs the strategy's decision time at a price that isn't real
+    yet. Gate today's scan entries until the clock reaches the scan time.
+
+    Non-scan reasons (pyramid adds, tiered exits, stops) act on the current bar by
+    design and are always allowed.
+    """
+    m = _SCAN_REASON_RE.search(reason or "")
+    if not m:
+        return True
+    return now_hhmm >= m.group(1)
 
 
 def intent_key(trade: dict) -> str:
