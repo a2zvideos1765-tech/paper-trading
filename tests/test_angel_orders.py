@@ -80,6 +80,37 @@ def test_old_sdk_none_raises():
         _place(_FakeOld(None))
 
 
+# ---- tick-size snapping (the AUROPHARMA ₹0.10 rejection) ----
+
+def _placed_price(tick_size, raw_price):
+    fake = _FakeFull({"status": True, "data": {"orderid": "1"}})
+    AngelClient(smart=fake, account=1).place_order(
+        "AUROPHARMA-EQ", "275", "NSE", "BUY", 1, raw_price, tick_size=tick_size)
+    return fake.last_params["price"]
+
+
+def test_snaps_to_10paise_tick():
+    # AUROPHARMA tick ₹0.10: 1378.95 must round to a 0.10 grid (the live rejection)
+    assert _placed_price(0.10, 1378.95) == "1379.00"
+    assert _placed_price(0.10, 1421.64) == "1421.60"
+
+
+def test_snaps_to_5paise_tick():
+    assert _placed_price(0.05, 1378.93) == "1378.95"
+
+
+def test_snaps_to_1paise_tick():
+    # penny scrip with ₹0.01 tick keeps the precise price
+    assert _placed_price(0.01, 18.52) == "18.52"
+
+
+def test_default_tick_is_5paise():
+    fake = _FakeFull({"status": True, "data": {"orderid": "1"}})
+    AngelClient(smart=fake, account=1).place_order(
+        "X-EQ", "1", "NSE", "BUY", 1, 100.07)  # no tick_size → default 0.05
+    assert fake.last_params["price"] == "100.05"
+
+
 def test_price_snapped_to_tick_grid():
     fake = _FakeFull({"status": True, "data": {"orderid": "1"}})
     _place(fake, price=1399.43)          # 1399.43 → nearest 0.05 → 1399.45

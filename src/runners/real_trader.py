@@ -137,7 +137,8 @@ async def symbol_map() -> dict[str, dict]:
     rows = await fetch(
         """
         SELECT u.symbol AS engine_symbol, u.token, u.exchange,
-               COALESCE(i.symbol, u.symbol) AS tradingsymbol
+               COALESCE(i.symbol, u.symbol) AS tradingsymbol,
+               i.tick_size
         FROM universe_symbols u
         LEFT JOIN instruments i ON i.token = u.token AND i.exchange = u.exchange
         WHERE u.enabled = TRUE AND u.kind = 'equity'
@@ -148,6 +149,8 @@ async def symbol_map() -> dict[str, dict]:
             "tradingsymbol": r["tradingsymbol"],
             "token": r["token"],
             "exchange": r["exchange"],
+            # instruments.tick_size is in paise → rupees; fall back to ₹0.05.
+            "tick": (float(r["tick_size"]) / 100.0) if r["tick_size"] else 0.05,
         }
         for r in rows
     }
@@ -308,6 +311,7 @@ async def place_new_orders(
                 client.place_order,
                 meta["tradingsymbol"], meta["token"], meta["exchange"],
                 trade["side"], int(trade["qty"]), float(trade["price"]),
+                tick_size=meta.get("tick", 0.05),
             )
             await conn_execute(
                 "UPDATE real_orders SET angel_order_id = $1, status = 'open', updated_at = now() "
