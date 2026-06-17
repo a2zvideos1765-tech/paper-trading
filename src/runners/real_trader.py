@@ -139,7 +139,7 @@ async def symbol_map() -> dict[str, dict]:
         SELECT u.symbol AS engine_symbol, u.token, u.exchange,
                COALESCE(i.symbol, u.symbol) AS tradingsymbol
         FROM universe_symbols u
-        LEFT JOIN instruments i ON i.token = u.token
+        LEFT JOIN instruments i ON i.token = u.token AND i.exchange = u.exchange
         WHERE u.enabled = TRUE AND u.kind = 'equity'
         """
     )

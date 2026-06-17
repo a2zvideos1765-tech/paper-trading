@@ -372,7 +372,9 @@ async def add_symbol(
         return {"error": "kind must be 'equity' or 'index'"}
 
     inst = await fetchrow(
-        "SELECT token, symbol, exchange, instrument_type FROM instruments WHERE token = $1",
+        # A token can match multiple exchange segments; prefer cash (NSE, then BSE).
+        "SELECT token, symbol, exchange, instrument_type FROM instruments WHERE token = $1 "
+        "ORDER BY CASE exchange WHEN 'NSE' THEN 0 WHEN 'BSE' THEN 1 ELSE 2 END LIMIT 1",
         token,
     )
     if not inst:
