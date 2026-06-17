@@ -32,7 +32,7 @@ async def symbols_page(request: Request) -> HTMLResponse:
         SELECT u.symbol, u.exchange, u.token, u.kind, u.added_at,
                i.name AS instrument_name, i.instrument_type
         FROM universe_symbols u
-        LEFT JOIN instruments i ON i.token = u.token
+        LEFT JOIN instruments i ON i.token = u.token AND i.exchange = u.exchange
         WHERE u.enabled = TRUE
         ORDER BY u.kind, u.symbol
         """,
@@ -117,7 +117,10 @@ class AddSymbolBody(BaseModel):
 async def add_symbol(body: AddSymbolBody, request: Request) -> JSONResponse:
     require_admin(request)
     inst = await fetchrow(
-        "SELECT token, symbol, exchange, instrument_type FROM instruments WHERE token = $1",
+        # A token can now match multiple exchange segments; prefer the cash
+        # exchanges (NSE, then BSE) over derivatives/commodities.
+        "SELECT token, symbol, exchange, instrument_type FROM instruments WHERE token = $1 "
+        "ORDER BY CASE exchange WHEN 'NSE' THEN 0 WHEN 'BSE' THEN 1 ELSE 2 END LIMIT 1",
         body.token,
     )
     if not inst:

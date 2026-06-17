@@ -118,7 +118,7 @@ async def _bulk_upsert(rows: list[tuple]) -> int:
                     (token, symbol, name, exchange, segment, instrument_type,
                      lot_size, tick_size, expiry, refreshed_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
-                ON CONFLICT (token) DO UPDATE
+                ON CONFLICT (token, exchange) DO UPDATE
                   SET symbol          = EXCLUDED.symbol,
                       name            = EXCLUDED.name,
                       exchange        = EXCLUDED.exchange,
