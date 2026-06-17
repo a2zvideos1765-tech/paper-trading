@@ -144,17 +144,19 @@ class AngelClient:
         order_type: str = "LIMIT",   # priced at the engine's decided price
         variety: str = "NORMAL",
         duration: str = "DAY",
+        tick_size: float = 0.05,     # the scrip's tick in ₹ (NOT paise); snap price to it
     ) -> str:
         """Place a single equity order and return Angel's order id.
 
         Defaults are CNC/delivery LIMIT, DAY validity — the swing-strategy bot
         prices each order at the engine's decided trade price. Not retried.
+
+        `tick_size` is the instrument's real tick in rupees (e.g. 0.10 for
+        AUROPHARMA, 0.05 for TATAPOWER, 0.01 for a penny scrip). The exchange
+        rejects LIMIT prices that aren't on this grid, so we snap to it. Callers
+        derive it from instruments.tick_size (which is in paise → ÷100).
         """
-        # Exchanges reject LIMIT prices that aren't on the tick grid. NSE ticks are
-        # ₹0.01 (≤₹250 scrips) or ₹0.05 (above); a 0.05-multiple is valid in both
-        # bands and on BSE, so snap the engine's raw price to the nearest 0.05.
-        # Max deviation from the engine's decision: 2.5 paise.
-        tick = 0.05
+        tick = tick_size if (tick_size and tick_size > 0) else 0.05
         limit_price = round(round(float(price) / tick) * tick, 2)
         params = {
             "variety": variety,

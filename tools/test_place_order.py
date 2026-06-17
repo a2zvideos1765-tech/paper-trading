@@ -30,7 +30,8 @@ async def _resolve(symbol: str):
     return await fetchrow(
         """
         SELECT u.symbol AS engine_symbol, u.token, u.exchange,
-               COALESCE(i.symbol, u.symbol) AS tradingsymbol
+               COALESCE(i.symbol, u.symbol) AS tradingsymbol,
+               i.tick_size
         FROM universe_symbols u
         LEFT JOIN instruments i ON i.token = u.token AND i.exchange = u.exchange
         WHERE u.symbol = $1 AND u.enabled = TRUE AND u.kind = 'equity'
@@ -58,7 +59,8 @@ async def main(args: argparse.Namespace) -> None:
             print(f"{args.symbol!r} is not an enabled equity in the universe.")
             return
         ts, token, exch = meta["tradingsymbol"], meta["token"], meta["exchange"]
-        print(f"Symbol {args.symbol}: tradingsymbol={ts} token={token} exchange={exch}")
+        tick = (float(meta["tick_size"]) / 100.0) if meta["tick_size"] else 0.05
+        print(f"Symbol {args.symbol}: tradingsymbol={ts} token={token} exchange={exch} tick=₹{tick}")
 
         client = await asyncio.to_thread(AngelClient.for_trading)
         print(f"Logged in on Angel account {client.account}")
@@ -75,6 +77,7 @@ async def main(args: argparse.Namespace) -> None:
         try:
             order_id = await asyncio.to_thread(
                 client.place_order, ts, token, exch, "BUY", args.qty, price,
+                tick_size=tick,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"\n❌ placeOrder FAILED: {exc}")
