@@ -230,7 +230,12 @@
     btn.addEventListener("click", async () => {
       if (!confirm(`Remove ${btn.dataset.symbol} from the watch list? History stays in the DB.`)) return;
       const r = await fetch(`/api/symbols/${encodeURIComponent(btn.dataset.symbol)}/${encodeURIComponent(btn.dataset.exchange)}`, { method: "DELETE" });
-      if (!r.ok) { alert("Remove failed."); return; }
+      if (!r.ok) {
+        let msg = "Remove failed.";
+        try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+        alert(msg);
+        return;
+      }
       btn.closest("tr").remove();
     });
   });

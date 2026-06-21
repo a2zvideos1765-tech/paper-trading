@@ -158,6 +158,22 @@ async def add_symbol(body: AddSymbolBody, request: Request) -> JSONResponse:
 @router.delete("/api/symbols/{symbol}/{exchange}")
 async def remove_symbol(symbol: str, exchange: str, request: Request) -> JSONResponse:
     require_admin(request)
+    # Safety: never remove a symbol the Angel account actually holds. The live bot
+    # can't exit a symbol that's left the universe (the engine stops loading its
+    # candles, so it never generates a SELL), which would strand the real shares.
+    # real_holdings stores the broker tradingsymbol (e.g. "AUROPHARMA-EQ"); the
+    # universe symbol is bare — match both forms.
+    held = await fetchrow(
+        "SELECT symbol, qty FROM real_holdings WHERE qty > 0 AND symbol IN ($1, $1 || '-EQ')",
+        symbol.upper(),
+    )
+    if held:
+        raise HTTPException(
+            409,
+            f"{symbol.upper()} is held in your Angel account ({held['qty']} share(s), "
+            f"{held['symbol']}). Sell the position first — the bot cannot exit a removed "
+            f"symbol — then remove it.",
+        )
     result = await execute(
         "UPDATE universe_symbols SET enabled = FALSE WHERE symbol = $1 AND exchange = $2",
         symbol, exchange.upper(),
