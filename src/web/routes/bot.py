@@ -67,6 +67,19 @@ async def bot_page(request: Request) -> HTMLResponse:
         "SELECT available_cash::float8, net::float8, utilised::float8, as_of "
         "FROM real_funds ORDER BY as_of DESC LIMIT 1"
     )
+    hv = await fetchrow(
+        "SELECT COALESCE(SUM(qty * COALESCE(ltp, avg_price)), 0)::float8 AS v FROM real_holdings"
+    )
+    holdings_value = float(hv["v"]) if hv else 0.0
+    funds_ctx = None
+    if funds:
+        cash = float(funds["available_cash"])
+        funds_ctx = {
+            "available_cash": cash,
+            "holdings_value": holdings_value,
+            "net_worth": cash + holdings_value,   # true account value, not just free cash
+            "as_of": funds["as_of"],
+        }
     deposits = await fetch(
         "SELECT ts, amount::float8, available_before::float8, available_after::float8, note "
         "FROM real_deposits ORDER BY ts DESC"
@@ -80,7 +93,7 @@ async def bot_page(request: Request) -> HTMLResponse:
             "bot_note": bot["note"] if bot else None,
             "bot_updated_at": bot["updated_at"] if bot else None,
             "live_pf": dict(live_pf) if live_pf else None,
-            "funds": dict(funds) if funds else None,
+            "funds": funds_ctx,
             "deposits": [dict(r) for r in deposits],
             "total_deposited": total_deposited,
             "market_open": is_market_open(),
@@ -140,12 +153,21 @@ async def api_bot_funds() -> JSONResponse:
         "SELECT available_cash::float8, net::float8, utilised::float8, as_of "
         "FROM real_funds ORDER BY as_of DESC LIMIT 1"
     )
+    hv = await fetchrow(
+        "SELECT COALESCE(SUM(qty * COALESCE(ltp, avg_price)), 0)::float8 AS v FROM real_holdings"
+    )
+    holdings_value = _flt(hv["v"]) if hv else 0.0
     if not row:
-        return JSONResponse({"available_cash": None, "net": None, "utilised": None, "as_of": None})
+        return JSONResponse({"available_cash": None, "holdings_value": holdings_value,
+                             "net_worth": None, "as_of": None})
+    cash = _flt(row["available_cash"]) or 0.0
     return JSONResponse({
-        "available_cash": _flt(row["available_cash"]),
-        "net": _flt(row["net"]),
-        "utilised": _flt(row["utilised"]),
+        "available_cash": cash,
+        "holdings_value": holdings_value,
+        # True account value = free cash + current market value of holdings.
+        # (Angel's rmsLimit `net` is only the free-cash figure, which is why the
+        # old "Net Value" read ₹830 while the account was really ~₹19k.)
+        "net_worth": cash + (holdings_value or 0.0),
         "as_of": _iso(row["as_of"]),
     })
 
