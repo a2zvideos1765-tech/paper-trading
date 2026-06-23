@@ -77,6 +77,32 @@ def test_already_placed_intent_is_skipped():
     assert out == []
 
 
+# ---- logical dedup: same entry at a wiggling price must NOT re-place ----
+
+def test_same_entry_different_price_not_replaced():
+    """The TCS-3× bug: the forming scan bar gives a different price each tick, so
+    the same logical entry must still be deduped against an already-placed order."""
+    placed = _trade("2026-06-16", symbol="TCS", price=2073.47)
+    incoming = _trade("2026-06-16", symbol="TCS", price=2075.77)  # same entry, new price
+    out = select_new_intents([incoming], {intent_key(placed)}, "2026-06-16", max_age_days=1)
+    assert out == []
+
+
+def test_same_entry_twice_in_one_batch_dedups():
+    a = _trade("2026-06-16", symbol="TCS", price=2073.47)
+    b = _trade("2026-06-16", symbol="TCS", price=2075.77)
+    out = select_new_intents([a, b], set(), "2026-06-16", max_age_days=1)
+    assert len(out) == 1
+
+
+def test_different_reasons_not_deduped():
+    # entry and a pyramid add on the same symbol/day are different logical actions
+    entry = _trade("2026-06-16", symbol="TCS", reason="entry_scan_11:00_drop_-3%")
+    pyr = _trade("2026-06-16", symbol="TCS", reason="pyramid_avg_-10%_lvl1")
+    out = select_new_intents([entry, pyr], set(), "2026-06-16", max_age_days=1)
+    assert len(out) == 2
+
+
 def test_order_preserved_chronologically():
     trades = [_trade("2026-06-16", symbol="A"), _trade("2026-06-16", symbol="B")]
     out = select_new_intents(trades, set(), "2026-06-16", max_age_days=1)
@@ -144,15 +170,21 @@ def test_scan_entry_before_scan_time_not_ready():
     assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "11:20") is False
 
 
-def test_scan_entry_at_scan_time_ready():
-    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "14:00") is True
+def test_scan_entry_at_scan_time_still_forming_not_ready():
+    # at 14:00 the 14:00 bar is only just opening (covers 14:00–14:05) → not ready
+    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "14:00") is False
+    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "14:04") is False
 
 
-def test_scan_entry_after_scan_time_ready():
+def test_scan_entry_after_bar_completes_ready():
+    # the 14:00 bar finalises at 14:05 → ready
+    assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "14:05") is True
     assert scan_time_elapsed("entry_scan_14:00_drop_-3%", "15:05") is True
 
 
-def test_earlier_scan_window_ready_at_later_time():
+def test_earlier_scan_window_ready_after_its_bar():
+    assert scan_time_elapsed("entry_scan_11:00_drop_-3%", "11:04") is False
+    assert scan_time_elapsed("entry_scan_11:00_drop_-3%", "11:05") is True
     assert scan_time_elapsed("entry_scan_11:00_drop_-3%", "11:20") is True
 
 
