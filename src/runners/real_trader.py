@@ -276,16 +276,32 @@ async def place_new_orders(
     portfolio: PortfolioRow,
     sym_map: dict[str, dict],
     new_intents: list[tuple[str, dict]],
+    available_cash: float | None = None,
 ) -> int:
     """Place a CNC LIMIT order at the engine's decided price for each new intent.
-    Records intent (status='pending') BEFORE the API call so a crash can't double-place."""
+    Records intent (status='pending') BEFORE the API call so a crash can't double-place.
+
+    `available_cash` is the real Angel free cash this tick. BUYs are gated against
+    it (with a small charges buffer) and the remaining cash is reserved per order,
+    so the bot never fires an order the account can't fund — the engine sizes off
+    *simulated* cash, which can exceed the real balance after rejects/partials."""
     placed = 0
+    cash_left = available_cash if available_cash is not None else float("inf")
     for key, trade in new_intents:
         sym = trade["symbol"]
         meta = sym_map.get(sym)
         if not meta:
             log.warning("no instrument mapping; cannot place order",
                         extra={"symbol": sym, "intent_key": key})
+            continue
+
+        # Real-cash guard (BUYs only): skip — don't even claim — an order the
+        # account can't afford. ~0.4% buffer for brokerage/STT/stamp/GST.
+        is_buy = str(trade["side"]).upper() == "BUY"
+        cost = int(trade["qty"]) * float(trade["price"]) * 1.004 if is_buy else 0.0
+        if is_buy and cost > cash_left:
+            log.info("skip BUY — insufficient real cash",
+                     extra={"symbol": sym, "cost": round(cost, 2), "cash_left": round(cash_left, 2)})
             continue
 
         # Claim the intent atomically. If the row already exists (a prior tick
@@ -323,6 +339,8 @@ async def place_new_orders(
                 order_row_id, json.dumps({"angel_order_id": angel_order_id}),
             )
             placed += 1
+            if is_buy:
+                cash_left -= cost  # reserve so later BUYs this tick don't over-commit
             log.info("real order placed",
                      extra={"symbol": sym, "side": trade["side"], "qty": trade["qty"],
                             "price": trade["price"], "angel_order_id": angel_order_id})
@@ -455,7 +473,8 @@ async def tick() -> None:
                 log.info("scan entries waiting for scan time (provisional, not placed)",
                          extra={"portfolio_id": p.id, "count": provisional, "now": now_hhmm})
 
-            total_placed += await place_new_orders(client, p, sym_map, ready)
+            total_placed += await place_new_orders(
+                client, p, sym_map, ready, available_cash=funds.get("available_cash"))
 
             # Surface signals too old to place, so a skipped entry is visible
             # rather than looking like a silent miss.

@@ -413,6 +413,17 @@ async def remove_symbol(symbol: str, exchange: str) -> dict:
     Takes effect within ~60s.
     """
     from src.core.db import execute
+    # Safety: refuse to remove a symbol the Angel account actually holds — the live
+    # bot can't exit a removed symbol (the engine stops seeing its candles), which
+    # would strand the real shares. Sell first, then remove.
+    held = await fetchrow(
+        "SELECT symbol, qty FROM real_holdings WHERE qty > 0 AND symbol IN ($1, $1 || '-EQ')",
+        symbol.upper(),
+    )
+    if held:
+        return {"error": f"{symbol.upper()} is held in the Angel account "
+                f"({held['qty']} share(s), {held['symbol']}). Sell it first — the bot "
+                f"cannot exit a removed symbol — then remove it."}
     result = await execute(
         "UPDATE universe_symbols SET enabled = FALSE WHERE symbol = $1 AND exchange = $2",
         symbol.upper(), exchange.upper(),

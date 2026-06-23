@@ -48,16 +48,16 @@
   </div>
 
   <div class="card-2 p-4">
-    <div class="text-xs text-muted mb-1">Net Value</div>
-    <div class="text-lg font-semibold text-default" id="stat-net">
-      {% if funds %}₹{{ "{:,.0f}".format(funds.net) }}{% else %}—{% endif %}
+    <div class="text-xs text-muted mb-1">Holdings Value</div>
+    <div class="text-lg font-semibold text-default" id="stat-holdings-value">
+      {% if funds %}₹{{ "{:,.0f}".format(funds.holdings_value) }}{% else %}—{% endif %}
     </div>
   </div>
 
   <div class="card-2 p-4">
-    <div class="text-xs text-muted mb-1">Utilised Margin</div>
-    <div class="text-lg font-semibold text-default" id="stat-utilised">
-      {% if funds %}₹{{ "{:,.0f}".format(funds.utilised) }}{% else %}—{% endif %}
+    <div class="text-xs text-muted mb-1">Net Value <span class="text-muted font-normal">(cash + holdings)</span></div>
+    <div class="text-lg font-semibold text-default" id="stat-net">
+      {% if funds %}₹{{ "{:,.0f}".format(funds.net_worth) }}{% else %}—{% endif %}
     </div>
   </div>
 
@@ -259,11 +259,11 @@
       const fmt = v => v != null ? "₹" + v.toLocaleString("en-IN", {maximumFractionDigits: 0}) : "—";
       const cash = document.getElementById("stat-cash");
       const net = document.getElementById("stat-net");
-      const util = document.getElementById("stat-utilised");
+      const hv = document.getElementById("stat-holdings-value");
       const asof = document.getElementById("funds-as-of");
       if (cash) cash.textContent = fmt(d.available_cash);
-      if (net) net.textContent = fmt(d.net);
-      if (util) util.textContent = fmt(d.utilised);
+      if (hv) hv.textContent = fmt(d.holdings_value);
+      if (net) net.textContent = fmt(d.net_worth);
       if (asof && d.as_of) asof.textContent = "Funds as of: " + d.as_of.replace("T", " ").slice(0, 19) + " IST";
     } catch (_) {}
   }

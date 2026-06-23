@@ -15,22 +15,22 @@ get placed the next session.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 
 # Matches the engine's scan-entry reason, e.g. "entry_scan_14:00_drop_-3%".
 _SCAN_REASON_RE = re.compile(r"entry_scan_(\d{2}:\d{2})")
 
 
-def scan_time_elapsed(reason: str, now_hhmm: str) -> bool:
-    """For a scan-mode entry, True only once its scan window time has passed today.
+def scan_time_elapsed(reason: str, now_hhmm: str, bar_minutes: int = 5) -> bool:
+    """For a scan-mode entry, True only once its scan BAR is complete today.
 
-    The engine evaluates a "14:00 scan" on the latest available bar *before or at*
-    14:00. On the current, incomplete day that is whatever the most recent bar is
-    (e.g. 11:20) — so the entry is PROVISIONAL: its price and even whether it fires
-    will change as more bars arrive, until 14:00 finalises it. Placing a real order
-    before then front-runs the strategy's decision time at a price that isn't real
-    yet. Gate today's scan entries until the clock reaches the scan time.
+    The engine reads the scan as `time <= scan_time` → the bar timestamped at the
+    scan time (e.g. the 11:00 bar covers 11:00–11:05 and only finalises at 11:05).
+    Acting at 11:00 means acting on a *still-forming* bar whose close keeps changing
+    every tick — which both front-runs the decision and makes the price (and the
+    intent) move each minute. So we wait until scan_time + one bar interval, when
+    the bar matches what the backtest used.
 
     Non-scan reasons (pyramid adds, tiered exits, stops) act on the current bar by
     design and are always allowed.
@@ -38,7 +38,32 @@ def scan_time_elapsed(reason: str, now_hhmm: str) -> bool:
     m = _SCAN_REASON_RE.search(reason or "")
     if not m:
         return True
-    return now_hhmm >= m.group(1)
+    ready_at = (datetime.strptime(m.group(1), "%H:%M")
+                + timedelta(minutes=bar_minutes)).strftime("%H:%M")
+    return now_hhmm >= ready_at
+
+
+def _logical_key_from_trade(trade: dict) -> str:
+    """One logical action = date · symbol · side · reason (NO price/qty/time).
+
+    The engine re-emits the same entry every tick; while its scan bar is still
+    forming the price (and qty) wiggle, so a price-bearing key lets the SAME
+    entry be placed as several real orders → duplicate fills. The reason already
+    encodes the scan window / pyramid level / exit tier, so this collapses re-
+    evaluations of one action while keeping genuinely different actions distinct.
+    """
+    return "|".join([str(trade["date"]), str(trade["symbol"]),
+                     str(trade["side"]), str(trade["reason"])])
+
+
+def _logical_key_from_intent_key(k: str) -> str:
+    """Derive the logical key from a stored full intent_key (back-compat with
+    real_orders rows written before logical dedup)."""
+    parts = k.split("|")
+    if len(parts) < 6:
+        return k
+    date_part = parts[0].split(" ")[0]
+    return "|".join([date_part, parts[1], parts[2], parts[-1]])
 
 
 def intent_key(trade: dict) -> str:
@@ -75,10 +100,14 @@ def select_new_intents(
     which absorbs a signal whose candle landed after market close. Set 0 for the
     strict today-only behaviour; bump to 3 to also bridge a Mon-after-Fri-signal gap.
 
-    Order is preserved (chronological as the engine emitted them).
+    Dedup is by *logical* key (date·symbol·side·reason), so the same entry can't
+    be placed twice just because its price/qty wiggled between ticks. Order is
+    preserved (chronological as the engine emitted them).
     """
     today = date.fromisoformat(today_str)
     min_date = today - timedelta(days=max(0, max_age_days))
+    existing_logical = {_logical_key_from_intent_key(k) for k in existing_keys}
+    seen_logical: set[str] = set()
     out: list[tuple[str, dict]] = []
     for t in trades:
         try:
@@ -87,10 +116,11 @@ def select_new_intents(
             continue
         if d < min_date or d > today:
             continue
-        key = intent_key(t)
-        if key in existing_keys:
+        lk = _logical_key_from_trade(t)
+        if lk in existing_logical or lk in seen_logical:
             continue
-        out.append((key, t))
+        seen_logical.add(lk)
+        out.append((intent_key(t), t))
     return out
 
 
