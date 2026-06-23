@@ -704,6 +704,7 @@ def run_backtest_v2(
     charges: ChargeConfigV2,
     start_date=None,
     deposits: "dict[str, float] | None" = None,
+    external_positions: "dict[str, dict] | None" = None,
 ) -> dict:
     """Run V2 backtest. `prices` must have columns: timestamp, symbol, open, high, low, close, volume, date, time.
 
@@ -714,8 +715,19 @@ def run_backtest_v2(
             The first deposit is typically handled via strategy.starting_cash; subsequent ones
             go here.  When pct_equity allocation mode is used, each deposit automatically scales
             future position sizes upward — no strategy parameter changes needed.
+        external_positions: Optional map of broker positions the engine did NOT create but should
+            still MANAGE — i.e. adopt and exit per the strategy's rules. Shape:
+            ``{"YYYY-MM-DD": {"RELIANCE": {"qty": int, "avg_price": float}, ...}}``. On (or after)
+            each keyed date, the symbol is injected into `holdings` (if not already held) with the
+            broker avg as entry, and `entry_depth_pct` / `entry_atr` snapshot from that day's
+            features so the adaptive exit ladder applies exactly as it would for a native entry.
+            Injection cost (`qty * avg_price`) is debited from `cash` to conserve equity. The
+            engine's own entry guard (`if symbol in holdings`) then prevents re-buying it. Used by
+            the live real-money trader to absorb manual buys / orphaned fills; ``None`` (default)
+            on every backtest and paper path → behaviour byte-for-byte unchanged.
 
-    Returns dict with summary, equity_curve, trades, open_positions, and deposits log.
+    Returns dict with summary, equity_curve, trades, open_positions, deposits log, and the
+    external-injection log.
     """
     # Determine effective scan windows for entry (primary + any extras)
     _effective_scan_times: tuple[str, ...] = strategy.scan_times if strategy.scan_times is not None else (strategy.scan_time,)
@@ -794,6 +806,31 @@ def run_backtest_v2(
     trades: list[dict] = []
     equity_curve: list[dict] = []
     _deposit_log: list[dict] = []   # records each injected deposit for SIP reporting
+
+    # External-position adoption: flatten the date-keyed map to one earliest injection
+    # date per symbol, so a position whose first-seen date falls on a non-trading day (or
+    # before the window) still gets injected on the first eligible trading day rather than
+    # being silently dropped. `_ext_injected` guards against re-injecting after a later exit.
+    _ext_seed: dict[str, dict] = {}
+    if external_positions:
+        for _dstr, _syms in external_positions.items():
+            try:
+                _dobj = pd.to_datetime(_dstr).date()
+            except (TypeError, ValueError):
+                continue
+            for _sym, _info in (_syms or {}).items():
+                try:
+                    _seed = {"date": _dobj, "qty": int(_info["qty"]), "avg_price": float(_info["avg_price"])}
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if _seed["qty"] <= 0 or _seed["avg_price"] <= 0:
+                    continue
+                cur = _ext_seed.get(_sym)
+                if cur is None or _seed["date"] < cur["date"]:
+                    _ext_seed[_sym] = _seed
+    _ext_injected: set[str] = set()
+    _external_log: list[dict] = []  # records each adopted position for /bot visibility
+
     trading_day_idx: dict = {}  # date -> index for time stops
     sorted_days = sorted(prices["date"].unique())
     for i, d in enumerate(sorted_days):
@@ -811,6 +848,40 @@ def run_backtest_v2(
                     "amount": round(_dep, 2),
                     "cash_after": round(cash, 2),
                 })
+
+        # ---- External-position adoption ----
+        # Inject any broker position due on/before today that the engine isn't already
+        # holding, BEFORE the exit/entry passes so it (a) can't be re-bought by the entry
+        # guard and (b) is eligible for a same-day tier exit if already above target.
+        # entry_depth_pct / entry_atr are snapshot from this day's features so the S404
+        # adaptive ladder picks the same bucket it would for a native entry.
+        if _ext_seed:
+            for _sym, _info in _ext_seed.items():
+                if _sym in _ext_injected or _sym in holdings or _info["date"] > day:
+                    continue
+                _srow = day_prices[day_prices["symbol"] == _sym]
+                _entry_atr = None
+                _entry_depth = None
+                if not _srow.empty:
+                    _r0 = _srow.iloc[0]
+                    _atr = _r0.get("atr14")
+                    _entry_atr = float(_atr) if _atr is not None and not pd.isna(_atr) else None
+                    _h90 = _r0.get("high_90d")
+                    if _h90 is not None and not pd.isna(_h90) and float(_h90) > 0:
+                        _entry_depth = (float(_h90) - _info["avg_price"]) / float(_h90) * 100.0
+                holdings[_sym] = _new_holding(
+                    _info["qty"], _info["avg_price"], day, _entry_atr,
+                    entry_depth_pct=_entry_depth,
+                )
+                cash -= _info["qty"] * _info["avg_price"]  # conserve equity: capital already spent
+                _ext_injected.add(_sym)
+                _external_log.append({
+                    "date": str(day), "symbol": _sym,
+                    "qty": _info["qty"], "avg_price": round(_info["avg_price"], 2),
+                    "entry_depth_pct": round(_entry_depth, 2) if _entry_depth is not None else None,
+                    "cash_after": round(cash, 2),
+                })
+
         day_prices = day_prices.sort_values("timestamp")
         day_idx = trading_day_idx[day]
 
@@ -1437,6 +1508,12 @@ def run_backtest_v2(
         {"symbol": s, "qty": int(p["qty"]), "avg_price": round(p["avg_price"], 2), "entry_date": str(p["entry_date"])}
         for s, p in sorted(holdings.items())
     ]
+    # Full per-symbol holding state (peak/tiers_hit/entry_atr/entry_depth/...). The slim
+    # open_positions list above loses these, and replay.py rebuilds them from the trade
+    # list — which fails for ADOPTED positions (they have no BUY trade). Returning the raw
+    # holdings dict lets the live trader persist adopted positions to `positions` with full
+    # fidelity. Copied so callers can't mutate engine internals.
+    holdings_state = {s: dict(p) for s, p in holdings.items()}
 
     summary = {
         "strategy": strategy.name,
@@ -1457,5 +1534,7 @@ def run_backtest_v2(
         "equity_curve": equity_curve,
         "trades": trades,
         "open_positions": open_positions,
+        "holdings_state": holdings_state,  # full per-symbol state dict (incl. adopted positions)
         "deposits": _deposit_log,  # list of {"date", "amount", "cash_after"} — empty when no deposits
+        "external_injections": _external_log,  # adopted broker positions — empty when none
     }

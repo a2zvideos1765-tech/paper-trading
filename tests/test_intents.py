@@ -10,6 +10,7 @@ from __future__ import annotations
 from src.engine.real_executor import (
     count_stale_intents,
     intent_key,
+    reconcile_sell_qty,
     scan_time_elapsed,
     select_new_intents,
     sip_deposit_amount,
@@ -193,3 +194,39 @@ def test_non_scan_reasons_always_ready():
     assert scan_time_elapsed("pyramid_avg_-10%_lvl1", "09:30") is True
     assert scan_time_elapsed("target_+25%_tier1", "09:30") is True
     assert scan_time_elapsed("", "09:30") is True
+
+
+# ---- reconcile_sell_qty: broker is the source of truth ----
+
+def test_sell_skipped_when_broker_holds_none():
+    """Phantom guard: a SELL for a symbol the broker doesn't hold returns 0 (skip).
+    This is what stops the bot re-trying a sell of a never-filled / surveillance-
+    blocked position (e.g. PARACABLES) on every tick forever."""
+    assert reconcile_sell_qty(engine_qty=45, broker_qty=0) == 0
+    assert reconcile_sell_qty(engine_qty=45, broker_qty=0, fully_closed=True) == 0
+
+
+def test_partial_tier_clamps_to_engine_qty():
+    """A partial profit tier sells the engine's qty when the broker holds at least that."""
+    assert reconcile_sell_qty(engine_qty=3, broker_qty=6, fully_closed=False) == 3
+
+
+def test_partial_tier_never_oversells_broker():
+    """If the broker somehow holds fewer than the engine thinks, never oversell."""
+    assert reconcile_sell_qty(engine_qty=10, broker_qty=4, fully_closed=False) == 4
+
+
+def test_full_close_sweeps_duplicate_fill_orphans():
+    """The exact INFY/TCS case: engine fully closed (qty 3) but the broker holds 6
+    from duplicate fills — the final exit sweeps ALL 6, leaving nothing stranded."""
+    assert reconcile_sell_qty(engine_qty=3, broker_qty=6, fully_closed=True) == 6
+
+
+def test_reserved_shares_are_not_resold_within_a_tick():
+    """Multiple tiers for one symbol in one tick can't collectively oversell."""
+    # tier1 already reserved 4 of 6 → full close sweeps only the remaining 2
+    assert reconcile_sell_qty(engine_qty=2, broker_qty=6, reserved=4, fully_closed=True) == 2
+    # everything already reserved → skip
+    assert reconcile_sell_qty(engine_qty=2, broker_qty=6, reserved=6, fully_closed=True) == 0
+    # partial tier clamps against what's left after the reservation
+    assert reconcile_sell_qty(engine_qty=3, broker_qty=6, reserved=5, fully_closed=False) == 1

@@ -146,6 +146,49 @@ def test_sip_deposit_injection_funds_a_later_entry():
     assert r_dep["deposits"][0]["date"] == drop_day
 
 
+def test_external_position_is_adopted_and_managed():
+    """Broker adoption: a position the engine didn't create (passed via
+    external_positions={date: {symbol: {qty, avg_price}}}) is injected into holdings
+    and EXITED by the strategy's rules — without ever emitting a BUY for it, and
+    without the engine re-buying it. external_positions=None leaves output unchanged."""
+    from dataclasses import replace
+
+    days = _trading_days(datetime(2025, 1, 1).date(), 60)
+    # Monotonic up-ramp → no -drop, so the engine never NATIVELY enters ACME.
+    closes = [100.0] * 25 + [100.0 + (160.0 - 100.0) * ((i + 1) / 35) for i in range(35)]
+    while len(closes) < len(days):
+        closes.append(closes[-1])
+    df = _build_history_one_symbol("ACME", list(zip(days, closes)))
+
+    base = replace(get("S6_tiered_exit"), starting_cash=100_000.0)
+
+    # Baseline: no adoption → no ACME trades at all, empty injection log.
+    r_plain = run_backtest_v2(df, base, ChargeConfigV2())
+    assert not any(t["symbol"] == "ACME" for t in r_plain["trades"]), "no native entry on a pure up-ramp"
+    assert r_plain["external_injections"] == []
+
+    # Parity: external_positions=None must be byte-for-byte the baseline.
+    r_none = run_backtest_v2(df, base, ChargeConfigV2(), external_positions=None)
+    assert r_none["trades"] == r_plain["trades"], "None adoption must not change engine output"
+
+    # Adopt 100 shares bought at ₹100 on day 26; the run-up to ₹160 must trigger exits.
+    inject_day = str(days[25])
+    r_adopt = run_backtest_v2(
+        df, base, ChargeConfigV2(),
+        external_positions={inject_day: {"ACME": {"qty": 100, "avg_price": 100.0}}},
+    )
+    assert r_adopt["external_injections"], "adoption should be logged"
+    inj = r_adopt["external_injections"][0]
+    assert inj["symbol"] == "ACME" and inj["qty"] == 100 and inj["avg_price"] == 100.0
+    assert "entry_depth_pct" in inj
+
+    acme_trades = [t for t in r_adopt["trades"] if t["symbol"] == "ACME"]
+    assert acme_trades, "the adopted position should be managed (and exited)"
+    assert not any(t["side"] == "BUY" for t in acme_trades), "adopted ≠ bought: no BUY emitted"
+    assert any(t["side"] == "SELL" and t["reason"].startswith("target_") for t in acme_trades), \
+        f"the strategy's tier exit should fire on the run-up; got {[t['reason'] for t in acme_trades]}"
+
+
 def test_min_entry_cash_gates_new_entries():
     """SIP fee gate: when free cash < min_entry_cash, NO new entries fire that day.
     Setting the floor above available cash blocks all buys; disabling it lets the

@@ -364,6 +364,7 @@ async def replay_one_portfolio(
     vix_close: pd.Series | None = None,
     record_intraday: bool = False,
     deposits: dict[str, float] | None = None,
+    external_positions: dict[str, dict] | None = None,
 ) -> dict:
     """Run the engine for this portfolio against the given candles window.
     Returns the engine's full result dict and persists trades / positions / equity.
@@ -374,6 +375,11 @@ async def replay_one_portfolio(
     `deposits` is the SIP variable-deposit map ({"YYYY-MM-DD": amount}) for the
     live real-money portfolio; the first deposit is `starting_cash`, later ones
     are injected mid-run. None (default) → no injections (all paper portfolios).
+
+    `external_positions` is the broker-adoption map ({"YYYY-MM-DD": {symbol: {qty,
+    avg_price}}}) for the live real-money portfolio: positions the account holds
+    that the engine didn't create, injected so the strategy manages their exits.
+    None (default) → no adoption (all paper portfolios).
     """
     clear_regime_cache()
     if not nifty_close.empty:
@@ -399,11 +405,16 @@ async def replay_one_portfolio(
     # Bind the portfolio's capital to the (possibly overridden) strategy.
     bound = replace(overridden, starting_cash=float(portfolio.capital))
 
-    result = run_backtest_v2(candles, bound, charges, deposits=deposits)
+    result = run_backtest_v2(candles, bound, charges, deposits=deposits,
+                             external_positions=external_positions)
 
-    # Persist
+    # Persist. Prefer the engine's full holdings dict (carries adopted positions, which
+    # have no BUY trade and so can't be reconstructed from the trade list); fall back to
+    # the trade-replay reconstruction for older engine outputs.
     await upsert_trades(portfolio.id, result["trades"])
-    holdings_state = _holdings_from_open_positions(result["open_positions"], result["trades"])
+    holdings_state = result.get("holdings_state")
+    if not holdings_state:
+        holdings_state = _holdings_from_open_positions(result["open_positions"], result["trades"])
     await replace_positions(portfolio.id, holdings_state)
     await upsert_equity_curve(portfolio.id, result["equity_curve"])
 

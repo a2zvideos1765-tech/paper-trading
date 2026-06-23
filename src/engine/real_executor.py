@@ -148,6 +148,38 @@ def count_stale_intents(
     return n
 
 
+def reconcile_sell_qty(
+    engine_qty: int,
+    broker_qty: int,
+    reserved: int = 0,
+    fully_closed: bool = False,
+) -> int:
+    """How many shares to actually SELL, with the BROKER as the source of truth.
+
+    The engine sizes off a *simulated* position that drifts from reality (rejects, partial
+    fills, duplicate fills, manual trades). This binds every sell to what the account really
+    holds:
+
+      * `broker_qty - reserved` (shares already committed to other sells this tick) is the
+        hard ceiling — we never oversell and never *phantom-sell* a position the broker
+        doesn't hold (returns 0 → caller skips). This is what stops the bot re-trying a sell
+        of a never-filled / surveillance-blocked symbol forever.
+      * `fully_closed` (the engine fully exited the symbol — it's gone from open positions):
+        sweep the ENTIRE remaining broker qty, clearing duplicate-fill orphans (e.g. broker
+        6 vs engine 3 → sell 6 on the final exit).
+      * otherwise (a partial profit tier): sell `min(engine_qty, available)` so a tier never
+        sells more than is held.
+
+    Returns the share count to place (0 means skip).
+    """
+    available = broker_qty - reserved
+    if available <= 0:
+        return 0
+    if fully_closed:
+        return available
+    return max(0, min(int(engine_qty), available))
+
+
 def sip_deposit_amount(
     account_net: float | None,
     expected_baseline: float,
