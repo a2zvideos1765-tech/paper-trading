@@ -36,6 +36,7 @@ from src.core.time import IST, is_market_open, now_ist, seconds_until_market_ope
 from src.core.universe import load_universe
 from src.engine.real_executor import (
     count_stale_intents,
+    reconcile_sell_qty,
     scan_time_elapsed,
     select_new_intents,
     sip_deposit_amount,
@@ -154,6 +155,87 @@ async def symbol_map() -> dict[str, dict]:
         }
         for r in rows
     }
+
+
+# ---------- Broker ↔ engine reconciliation (single source of truth = the broker) ----------
+
+async def broker_holdings_by_engine(reverse_map: dict[str, str]) -> dict[str, dict]:
+    """Current broker holdings keyed by ENGINE symbol (e.g. 'INFY', not 'INFY-EQ').
+
+    `reverse_map` is tradingsymbol → engine symbol (built from symbol_map). Only
+    universe-mapped holdings are returned — the engine can only manage symbols it has
+    candles/features for. Non-universe manual buys are intentionally excluded here (they
+    still show on /bot, just unmanaged)."""
+    rows = await fetch("SELECT symbol, qty, avg_price::float8 AS avg_price FROM real_holdings")
+    out: dict[str, dict] = {}
+    for r in rows:
+        eng = reverse_map.get(r["symbol"])
+        if not eng:
+            continue
+        q = int(r["qty"] or 0)
+        if q <= 0:
+            continue
+        cur = out.get(eng)
+        if cur:  # two broker rows mapping to one engine symbol — sum (defensive)
+            cur["qty"] += q
+        else:
+            out[eng] = {"qty": q, "avg_price": float(r["avg_price"])}
+    return out
+
+
+async def external_positions_map() -> dict[str, dict]:
+    """Adopted broker positions keyed by IST first-seen date → {symbol: {qty, avg_price}},
+    in the shape run_backtest_v2's `external_positions=` expects. These are positions the
+    account holds that the engine didn't create (manual buys / orphaned fills), recorded so
+    the engine adopts and exits them per the strategy."""
+    rows = await fetch(
+        "SELECT symbol, first_seen_date, entry_price::float8 AS entry_price, qty "
+        "FROM real_external_positions"
+    )
+    out: dict[str, dict] = {}
+    for r in rows:
+        d = r["first_seen_date"]
+        dstr = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        out.setdefault(dstr, {})[r["symbol"]] = {
+            "qty": int(r["qty"]), "avg_price": float(r["entry_price"]),
+        }
+    return out
+
+
+async def reconcile_external_positions(
+    engine_open_syms: set[str],
+    broker_by_engine: dict[str, dict],
+    today_str: str,
+) -> int:
+    """Keep `real_external_positions` in step with reality. Returns count newly adopted.
+
+    Adopt: a universe symbol the BROKER holds but the engine is NOT managing (absent from
+    its open positions) — a manual buy or an orphaned fill of an already-closed position.
+    Recorded with first-seen date/price/qty as the engine's entry snapshot (ON CONFLICT DO
+    NOTHING preserves the original snapshot so the deterministic replay stays stable).
+
+    Release: drop adopted rows the broker no longer holds (fully exited)."""
+    adopted = 0
+    for eng, info in broker_by_engine.items():
+        if eng in engine_open_syms:
+            continue  # already managed by the engine — not an external position
+        row = await fetchrow(
+            "INSERT INTO real_external_positions (symbol, first_seen_date, entry_price, qty, note) "
+            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (symbol) DO NOTHING RETURNING symbol",
+            eng, _date.fromisoformat(today_str), info["avg_price"], int(info["qty"]),
+            "auto-adopted: broker holds, engine did not create",
+        )
+        if row is not None:
+            adopted += 1
+            log.info("adopted external position",
+                     extra={"symbol": eng, "qty": info["qty"], "avg_price": info["avg_price"]})
+    held = list(broker_by_engine.keys())
+    if held:
+        await conn_execute(
+            "DELETE FROM real_external_positions WHERE symbol <> ALL($1::text[])", held)
+    else:
+        await conn_execute("DELETE FROM real_external_positions")
+    return adopted
 
 
 # ---------- Broker-state sync (runs every tick, bot ON or OFF) ----------
@@ -277,6 +359,8 @@ async def place_new_orders(
     sym_map: dict[str, dict],
     new_intents: list[tuple[str, dict]],
     available_cash: float | None = None,
+    engine_target_qty: dict[str, int] | None = None,
+    broker_qty: dict[str, int] | None = None,
 ) -> int:
     """Place a CNC LIMIT order at the engine's decided price for each new intent.
     Records intent (status='pending') BEFORE the API call so a crash can't double-place.
@@ -284,9 +368,21 @@ async def place_new_orders(
     `available_cash` is the real Angel free cash this tick. BUYs are gated against
     it (with a small charges buffer) and the remaining cash is reserved per order,
     so the bot never fires an order the account can't fund — the engine sizes off
-    *simulated* cash, which can exceed the real balance after rejects/partials."""
+    *simulated* cash, which can exceed the real balance after rejects/partials.
+
+    SELLs are bound to the BROKER (the single source of truth):
+      * `broker_qty` (engine symbol → real held qty) is the hard ceiling.
+        Broker holds none → skip entirely (kills phantom sells of never-filled /
+        surveillance positions, e.g. PARACABLES rejecting forever).
+      * `engine_target_qty` (engine symbol → post-replay position qty) tells us whether
+        the engine fully closed the symbol. On a full close (symbol absent), we sweep the
+        *entire* broker quantity — clearing duplicate-fill orphans (e.g. broker 6 vs engine
+        3). On a partial tier, we sell min(engine qty, broker available) so we never oversell.
+      * `sell_reserved` tracks shares already committed THIS tick so multiple tiers for one
+        symbol can't collectively oversell."""
     placed = 0
     cash_left = available_cash if available_cash is not None else float("inf")
+    sell_reserved: dict[str, int] = {}
     for key, trade in new_intents:
         sym = trade["symbol"]
         meta = sym_map.get(sym)
@@ -295,14 +391,33 @@ async def place_new_orders(
                         extra={"symbol": sym, "intent_key": key})
             continue
 
-        # Real-cash guard (BUYs only): skip — don't even claim — an order the
-        # account can't afford. ~0.4% buffer for brokerage/STT/stamp/GST.
         is_buy = str(trade["side"]).upper() == "BUY"
-        cost = int(trade["qty"]) * float(trade["price"]) * 1.004 if is_buy else 0.0
-        if is_buy and cost > cash_left:
-            log.info("skip BUY — insufficient real cash",
-                     extra={"symbol": sym, "cost": round(cost, 2), "cash_left": round(cash_left, 2)})
-            continue
+
+        if is_buy:
+            # Real-cash guard: skip — don't even claim — an order the account can't
+            # afford. ~0.4% buffer for brokerage/STT/stamp/GST.
+            eff_qty = int(trade["qty"])
+            cost = eff_qty * float(trade["price"]) * 1.004
+            if cost > cash_left:
+                log.info("skip BUY — insufficient real cash",
+                         extra={"symbol": sym, "cost": round(cost, 2), "cash_left": round(cash_left, 2)})
+                continue
+        else:
+            # Broker-bound SELL: never sell more than the account holds; never
+            # phantom-sell; sweep orphans on full close. (Pure decision in real_executor.)
+            cost = 0.0
+            bq = (broker_qty or {}).get(sym, 0)
+            fully_closed = engine_target_qty is None or sym not in engine_target_qty
+            eff_qty = reconcile_sell_qty(
+                int(trade["qty"]), bq, reserved=sell_reserved.get(sym, 0), fully_closed=fully_closed)
+            if eff_qty <= 0:
+                log.info("skip SELL — broker holds none (phantom / over-sell guard)",
+                         extra={"symbol": sym, "broker_qty": bq, "reason": trade.get("reason")})
+                continue
+            if eff_qty != int(trade["qty"]):
+                log.info("SELL qty reconciled to broker",
+                         extra={"symbol": sym, "engine_qty": int(trade["qty"]), "broker_qty": bq,
+                                "placed_qty": eff_qty, "full_close": fully_closed})
 
         # Claim the intent atomically. If the row already exists (a prior tick
         # placed it), ON CONFLICT DO NOTHING returns no row → skip.
@@ -315,7 +430,7 @@ async def place_new_orders(
                 ON CONFLICT (intent_key) DO NOTHING
                 RETURNING id
                 """,
-                portfolio.id, key, sym, trade["side"], int(trade["qty"]),
+                portfolio.id, key, sym, trade["side"], eff_qty,
                 float(trade["price"]), trade["reason"],
             )
         if claimed is None:
@@ -326,7 +441,7 @@ async def place_new_orders(
             angel_order_id = await asyncio.to_thread(
                 client.place_order,
                 meta["tradingsymbol"], meta["token"], meta["exchange"],
-                trade["side"], int(trade["qty"]), float(trade["price"]),
+                trade["side"], eff_qty, float(trade["price"]),
                 tick_size=meta.get("tick", 0.05),
             )
             await conn_execute(
@@ -341,8 +456,10 @@ async def place_new_orders(
             placed += 1
             if is_buy:
                 cash_left -= cost  # reserve so later BUYs this tick don't over-commit
+            else:
+                sell_reserved[sym] = sell_reserved.get(sym, 0) + eff_qty  # don't oversell across tiers
             log.info("real order placed",
-                     extra={"symbol": sym, "side": trade["side"], "qty": trade["qty"],
+                     extra={"symbol": sym, "side": trade["side"], "qty": eff_qty,
                             "price": trade["price"], "angel_order_id": angel_order_id})
         except Exception as exc:  # noqa: BLE001
             await conn_execute(
@@ -430,6 +547,14 @@ async def tick() -> None:
     deposits = await deposits_map()
     today_str = now_ist().date().isoformat()
 
+    # Broker = single source of truth. Map broker holdings to engine symbols, and load the
+    # adopted-positions map so the engine manages anything the account holds that it didn't
+    # create (manual buys / orphaned fills). Built once per tick from the just-synced state.
+    reverse_map = {meta["tradingsymbol"]: eng for eng, meta in sym_map.items()}
+    broker_by_engine = await broker_holdings_by_engine(reverse_map)
+    broker_qty = {eng: info["qty"] for eng, info in broker_by_engine.items()}
+    external_map = await external_positions_map()
+
     until = now_ist().replace(second=0, microsecond=0)
     earliest_start = min(p.started_at for p in portfolios)
     candles = await load_candles_window(equity_symbols, CANDLE_INTERVAL, earliest_start, until)
@@ -448,9 +573,16 @@ async def tick() -> None:
             result = await replay_one_portfolio(
                 p, strategy, p_candles, CHARGES, nifty, sensex, vix,
                 record_intraday=True, deposits=deposits or None,
+                external_positions=external_map or None,
             )
             if result.get("validation_errors"):
                 continue
+
+            # Adopt broker positions the engine isn't managing (manual buys / orphaned
+            # fills) so the NEXT replay exits them per strategy; release fully-exited ones.
+            engine_open_syms = {op["symbol"] for op in result["open_positions"]}
+            await reconcile_external_positions(engine_open_syms, broker_by_engine, today_str)
+            engine_target_qty = {op["symbol"]: int(op["qty"]) for op in result["open_positions"]}
 
             # Diff intents → place real orders for recent new signals (within the
             # configured age window — absorbs signals whose candle arrived late).
@@ -474,7 +606,8 @@ async def tick() -> None:
                          extra={"portfolio_id": p.id, "count": provisional, "now": now_hhmm})
 
             total_placed += await place_new_orders(
-                client, p, sym_map, ready, available_cash=funds.get("available_cash"))
+                client, p, sym_map, ready, available_cash=funds.get("available_cash"),
+                engine_target_qty=engine_target_qty, broker_qty=broker_qty)
 
             # Surface signals too old to place, so a skipped entry is visible
             # rather than looking like a silent miss.

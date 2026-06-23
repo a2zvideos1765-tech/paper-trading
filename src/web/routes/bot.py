@@ -176,21 +176,68 @@ async def api_bot_funds() -> JSONResponse:
 
 @router.get("/api/bot/holdings")
 async def api_bot_holdings() -> JSONResponse:
+    """One reconciled holdings view — the BROKER is the source of truth, annotated with
+    how the engine is managing each position:
+
+      * engine  — a native bot position the engine reconstructs from its trades.
+      * adopted — a manual buy / orphaned fill the engine has taken over (S404 will exit it).
+      * orphan  — the broker holds it but the engine isn't managing it (e.g. a brand-new
+                  manual buy not yet adopted this minute, or a non-universe holding).
+
+    `orphan_qty` flags duplicate-fill shares on a managed symbol (broker qty > engine qty);
+    those ride along and are swept when the engine fully closes the position."""
     rows = await fetch(
-        "SELECT symbol, qty, avg_price::float8, ltp::float8, pnl::float8, as_of "
-        "FROM real_holdings ORDER BY symbol"
+        """
+        WITH lp AS (SELECT id FROM portfolios WHERE live = TRUE ORDER BY id LIMIT 1)
+        SELECT
+            rh.symbol AS broker_symbol,
+            regexp_replace(rh.symbol, '-(EQ|BE|BZ|SM|ST)$', '') AS engine_symbol,
+            rh.qty AS broker_qty,
+            rh.avg_price::float8 AS avg_price,
+            rh.ltp::float8       AS ltp,
+            rh.pnl::float8       AS pnl,
+            rh.as_of,
+            pos.qty              AS engine_qty,
+            pos.entry_price::float8 AS entry_price,
+            pos.entry_date      AS entry_date,
+            pos.tiers_hit       AS tiers_hit,
+            (ext.symbol IS NOT NULL) AS adopted
+        FROM real_holdings rh
+        LEFT JOIN positions pos
+               ON pos.portfolio_id = (SELECT id FROM lp)
+              AND pos.symbol = regexp_replace(rh.symbol, '-(EQ|BE|BZ|SM|ST)$', '')
+        LEFT JOIN real_external_positions ext
+               ON ext.symbol = regexp_replace(rh.symbol, '-(EQ|BE|BZ|SM|ST)$', '')
+        ORDER BY rh.symbol
+        """
     )
-    return JSONResponse([
-        {
-            "symbol": r["symbol"],
-            "qty": int(r["qty"]),
+    out = []
+    for r in rows:
+        broker_qty = int(r["broker_qty"] or 0)
+        engine_qty = int(r["engine_qty"]) if r["engine_qty"] is not None else None
+        if r["adopted"]:
+            managed_by = "adopted"
+        elif engine_qty is not None:
+            managed_by = "engine"
+        else:
+            managed_by = "orphan"
+        # Duplicate-fill shares on a managed symbol (swept on full close).
+        orphan_qty = (broker_qty - engine_qty) if (engine_qty is not None and broker_qty > engine_qty) else 0
+        out.append({
+            "symbol": r["engine_symbol"],
+            "broker_symbol": r["broker_symbol"],
+            "qty": broker_qty,
             "avg_price": _flt(r["avg_price"]),
             "ltp": _flt(r["ltp"]),
             "pnl": _flt(r["pnl"]),
+            "managed_by": managed_by,
+            "engine_qty": engine_qty,
+            "orphan_qty": orphan_qty,
+            "entry_price": _flt(r["entry_price"]),
+            "tiers_hit": int(r["tiers_hit"]) if r["tiers_hit"] is not None else None,
             "as_of": _iso(r["as_of"]),
-        }
-        for r in rows
-    ])
+        })
+    return JSONResponse(out)
 
 
 # ---------- orders ----------
