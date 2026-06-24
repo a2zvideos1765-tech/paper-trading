@@ -125,14 +125,13 @@ async def _run_one(client: AngelClient, item: dict) -> int:
 
 def _past_deadline(start: datetime) -> bool:
     now = now_ist()
-    # Same calendar day that started? Stop at 06:00 IST today.
-    # Started yesterday and rolled past midnight? Stop at 06:00 IST today still.
-    deadline_today = now.replace(hour=DEADLINE_HOUR_IST, minute=0, second=0, microsecond=0)
-    if now < deadline_today:
-        # Before 06:00 — only stop if more than 12h have passed (sanity)
-        return (now - start) > timedelta(hours=12)
-    # After 06:00 — stop
-    return True
+    # Worker starts at ~18:00 IST and runs overnight until 06:00 IST next morning.
+    # Compute 06:00 IST on the start day; if that's already in the past (it always
+    # is when we launch at 18:00), roll to 06:00 IST tomorrow.
+    deadline = start.replace(hour=DEADLINE_HOUR_IST, minute=0, second=0, microsecond=0)
+    if deadline <= start:
+        deadline += timedelta(days=1)
+    return now >= deadline
 
 
 async def main() -> None:
