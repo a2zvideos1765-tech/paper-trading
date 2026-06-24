@@ -66,6 +66,20 @@
         <a href="/bot"      class="nav-link {% if p.startswith('/bot') %}active{% endif %}">Bot</a>
       </nav>
       <div class="flex items-center gap-2 shrink-0">
+        {% if not is_viewer %}
+        <button type="button" id="alert-bell" class="relative theme-toggle" onclick="window.toggleAlerts()"
+                aria-label="Notifications" title="Notifications">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          <span id="alert-badge"
+                class="hidden absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] px-1 rounded-full
+                       text-[10px] font-bold leading-[16px] text-center text-white"
+                style="background: var(--down);">0</span>
+        </button>
+        {% endif %}
         <button type="button" class="theme-toggle" onclick="window.toggleTheme()" aria-label="Toggle theme">
           <!-- moon (light mode showing this) -->
           <svg class="moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -86,6 +100,30 @@
     </div>
   </header>
 
+  {% if not is_viewer %}
+  <!-- Notification panel: aggregated errors / Angel rate limits / process stalls.
+       Hidden until the bell is clicked. Polls /api/alerts. -->
+  <div id="alert-panel" class="fixed z-30 right-2 md:right-4 top-14 w-[94vw] max-w-md card-2 shadow-xl"
+       style="max-height: 80vh; display:none;">
+    <div class="flex items-center justify-between gap-2 px-4 py-3" style="border-bottom: 1px solid var(--border);">
+      <div class="flex items-center gap-2">
+        <span class="font-semibold text-sm">Notifications</span>
+        <span id="alert-window" class="pill pill-muted text-[10px]">last 24h</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <a id="alert-download" href="/api/alerts/download?hours=48"
+           class="btn-ghost text-xs px-2 py-1" title="Download a debug bundle to paste into Claude">⬇ Download</a>
+        <button type="button" onclick="window.toggleAlerts(false)" class="text-muted hover:text-default text-lg leading-none px-1" aria-label="Close">&times;</button>
+      </div>
+    </div>
+    <div id="alert-summary" class="px-4 py-2 text-[11px] text-muted flex flex-wrap gap-x-3 gap-y-1"
+         style="border-bottom: 1px solid var(--border);"></div>
+    <div id="alert-list" class="overflow-y-auto" style="max-height: calc(80vh - 96px);">
+      <div class="px-4 py-6 text-sm text-muted text-center">Loading…</div>
+    </div>
+  </div>
+  {% endif %}
+
   <main class="max-w-6xl mx-auto px-4 py-4 pb-24 md:pb-8">
     {% block content %}{% endblock %}
   </main>
@@ -102,5 +140,115 @@
       <a href="/bot"     class="py-3 text-center {% if p.startswith('/bot') %}text-accent{% else %}text-muted{% endif %}">Bot</a>
     </div>
   </nav>
+
+  {% if not is_viewer %}
+  <script>
+  // ---- Notification bell: aggregated errors / Angel rate limits / process stalls ----
+  (function () {
+    const ALERT_HOURS = 24;
+    const CAT_LABEL = {
+      rate_limit: "rate limit", order_reject: "order reject", auth: "auth",
+      stale: "process stale", error: "error", warning: "warning",
+    };
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    function fmtTime(iso) {
+      try { return new Date(iso).toLocaleString("en-IN", { hour12: false }); }
+      catch (e) { return iso || ""; }
+    }
+
+    function setBadge(n) {
+      const b = document.getElementById("alert-badge");
+      if (!b) return;
+      if (n > 0) { b.textContent = n > 99 ? "99+" : n; b.classList.remove("hidden"); }
+      else { b.classList.add("hidden"); }
+    }
+
+    function renderSummary(s) {
+      const el = document.getElementById("alert-summary");
+      if (!el) return;
+      const chip = (label, n, color) =>
+        n > 0 ? `<span style="color:${color}">●</span> ${label}: <b>${n}</b>` : "";
+      const parts = [
+        chip("errors", s.errors, "var(--down)"),
+        chip("warnings", s.warnings, "#d97706"),
+        chip("rate limits", s.rate_limits, "#d97706"),
+        chip("order rejects", s.order_rejects, "var(--down)"),
+        chip("stale procs", s.stale_processes, "var(--down)"),
+      ].filter(Boolean);
+      el.innerHTML = parts.length ? parts.join(" ") : "All clear — no issues in the window.";
+    }
+
+    function rowHtml(a, i) {
+      const color = a.severity === "error" ? "var(--down)" : "#d97706";
+      const cat = CAT_LABEL[a.category] || a.category;
+      return `
+        <div class="px-4 py-2.5" style="border-bottom:1px solid var(--border);">
+          <button type="button" class="w-full text-left" onclick="window._alertToggle(${i})">
+            <div class="flex items-start gap-2">
+              <span style="color:${color}; line-height:1.2;">●</span>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm truncate">${esc(a.title)}</div>
+                <div class="text-[11px] text-muted mt-0.5">
+                  ${esc(a.app)} · ${esc(cat)} · ${esc(fmtTime(a.ts))}
+                </div>
+              </div>
+            </div>
+          </button>
+          <pre id="alert-detail-${i}" class="hidden mt-2 p-2 text-[11px] font-mono whitespace-pre-wrap break-words rounded"
+               style="background:var(--surface-2); max-height:240px; overflow:auto;">${esc(a.detail)}</pre>
+        </div>`;
+    }
+
+    window._alertToggle = function (i) {
+      const el = document.getElementById("alert-detail-" + i);
+      if (el) el.classList.toggle("hidden");
+    };
+
+    function render(data) {
+      setBadge((data.summary.errors || 0) + (data.summary.warnings || 0));
+      renderSummary(data.summary);
+      const list = document.getElementById("alert-list");
+      if (!list) return;
+      const win = document.getElementById("alert-window");
+      if (win) win.textContent = "last " + data.hours + "h";
+      if (!data.alerts.length) {
+        list.innerHTML = `<div class="px-4 py-8 text-sm text-muted text-center">No errors or warnings 🎉</div>`;
+        return;
+      }
+      list.innerHTML = data.alerts.map(rowHtml).join("");
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch("/api/alerts?hours=" + ALERT_HOURS, { credentials: "same-origin" });
+        if (!r.ok) return;
+        render(await r.json());
+      } catch (e) { /* transient; next tick retries */ }
+    }
+
+    window.toggleAlerts = function (force) {
+      const panel = document.getElementById("alert-panel");
+      if (!panel) return;
+      const show = (force === undefined) ? (panel.style.display === "none") : force;
+      panel.style.display = show ? "block" : "none";
+      if (show) poll();
+    };
+
+    // Close on outside click / Escape.
+    document.addEventListener("click", (e) => {
+      const panel = document.getElementById("alert-panel");
+      const bell = document.getElementById("alert-bell");
+      if (!panel || panel.style.display === "none") return;
+      if (!panel.contains(e.target) && bell && !bell.contains(e.target)) panel.style.display = "none";
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") window.toggleAlerts(false); });
+
+    poll();
+    setInterval(poll, 45000);
+  })();
+  </script>
+  {% endif %}
 </body>
 </html>

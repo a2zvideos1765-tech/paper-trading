@@ -314,7 +314,12 @@ def _call_with_retry(fn, *, max_retries: int = 3):
             is_rate_limit = "exceeding access rate" in msg or "access denied" in msg
             if not is_rate_limit or attempt >= max_retries:
                 raise
-            time.sleep(min(90, 10 * (attempt + 1)))
+            wait = min(90, 10 * (attempt + 1))
+            # Surface every backoff so the dashboard's alert feed can count
+            # rate-limit hits (these were previously silent sleeps).
+            log.warning("angel rate limit — backing off",
+                        extra={"attempt": attempt + 1, "wait_s": wait, "err": str(exc)[:200]})
+            time.sleep(wait)
     raise RuntimeError("Unreachable retry state")
 
 
@@ -329,5 +334,9 @@ def _get_candle_with_retry(smart: SmartConnect, params: dict[str, Any], max_retr
             if not is_rate_limit or attempt >= max_retries:
                 raise
             wait = min(90, 10 * (attempt + 1))
+            # Surface every backoff so the dashboard's alert feed can count
+            # rate-limit hits (these were previously silent sleeps).
+            log.warning("angel rate limit — backing off (candle fetch)",
+                        extra={"attempt": attempt + 1, "wait_s": wait, "err": str(exc)[:200]})
             time.sleep(wait)
     raise RuntimeError("Unreachable retry state")
