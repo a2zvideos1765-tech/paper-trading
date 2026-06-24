@@ -142,6 +142,28 @@
   </div>
 </section>
 
+<!-- Quarantined (AB4036 auto-skip) -->
+<section class="card-2 mb-5 overflow-hidden" id="quarantine-section" style="display:none;">
+  <div class="px-4 py-3 border-b border-default flex items-center justify-between">
+    <span class="text-sm font-semibold text-default">Quarantined <span class="text-muted font-normal">(surveillance / cautionary — BUYs auto-skipped)</span></span>
+    <span id="quarantine-count" class="text-xs text-muted"></span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-default text-xs text-muted">
+          <th class="px-4 py-2 text-left">Symbol</th>
+          <th class="px-4 py-2 text-left">Code</th>
+          <th class="px-4 py-2 text-right">Hits</th>
+          <th class="px-4 py-2 text-left">Since</th>
+          <th class="px-4 py-2 text-left">Auto-clears</th>
+        </tr>
+      </thead>
+      <tbody id="quarantine-tbody"></tbody>
+    </table>
+  </div>
+</section>
+
 <!-- SIP Deposits -->
 <section class="card-2 mb-5 overflow-hidden">
   <div class="px-4 py-3 border-b border-default">
@@ -361,6 +383,30 @@
     } catch (_) {}
   }
 
+  // ---- quarantine polling (AB4036 auto-skip) ----
+  async function pollQuarantine() {
+    try {
+      const r = await fetch("/api/bot/quarantine");
+      const rows = await r.json();
+      const sec = document.getElementById("quarantine-section");
+      const tbody = document.getElementById("quarantine-tbody");
+      const cnt = document.getElementById("quarantine-count");
+      if (!sec || !tbody) return;
+      if (!rows.length) { sec.style.display = "none"; return; }
+      sec.style.display = "";
+      if (cnt) cnt.textContent = rows.length + " benched";
+      const fmtT = s => s ? s.replace("T", " ").slice(0, 10) : "—";
+      tbody.innerHTML = rows.map(q => `
+        <tr class="border-b border-default hover:bg-surface2 transition-colors text-xs">
+          <td class="px-4 py-2 font-mono font-semibold text-default">${esc(q.symbol)}</td>
+          <td class="px-4 py-2"><span class="pill text-[10px] pill-red" title="${esc(q.reason_text)}">${esc(q.reason_code)}</span></td>
+          <td class="px-4 py-2 text-right">${q.hits}</td>
+          <td class="px-4 py-2 text-muted">${fmtT(q.quarantined_at)}</td>
+          <td class="px-4 py-2 text-muted">${fmtT(q.expires_at)}</td>
+        </tr>`).join("");
+    } catch (_) {}
+  }
+
   // ---- toggle ----
   window.toggleBot = async function () {
     const btn = document.getElementById("toggle-btn");
@@ -442,12 +488,14 @@
   pollFunds();
   pollHoldings();
   pollOrders();
+  pollQuarantine();
   pollLogs();
 
   setInterval(pollStatus, 15_000);    // status every 15s
   setInterval(pollFunds, 30_000);     // funds every 30s
   setInterval(pollHoldings, 30_000);  // holdings every 30s
   setInterval(pollOrders, 20_000);    // orders every 20s
+  setInterval(pollQuarantine, 60_000); // quarantine every 60s
   setInterval(() => {                  // logs every 10s, if auto is checked
     const auto = document.getElementById("log-autorefresh");
     if (auto && auto.checked) pollLogs();

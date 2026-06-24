@@ -705,6 +705,7 @@ def run_backtest_v2(
     start_date=None,
     deposits: "dict[str, float] | None" = None,
     external_positions: "dict[str, dict] | None" = None,
+    cash_override: "dict[str, float] | None" = None,
 ) -> dict:
     """Run V2 backtest. `prices` must have columns: timestamp, symbol, open, high, low, close, volume, date, time.
 
@@ -725,9 +726,16 @@ def run_backtest_v2(
             engine's own entry guard (`if symbol in holdings`) then prevents re-buying it. Used by
             the live real-money trader to absorb manual buys / orphaned fills; ``None`` (default)
             on every backtest and paper path → behaviour byte-for-byte unchanged.
+        cash_override: Optional map of date strings ("YYYY-MM-DD") to an absolute cash value
+            that *replaces* the simulated ``cash`` at the top of that day (after any deposit /
+            adoption injection — it is the final word). The live trader passes
+            ``{today: broker_free_cash}`` so entry sizing (pct_equity allocation + the
+            ``min_entry_cash`` gate) reflects the account's REAL free cash, absorbing manual
+            sells / withdrawals the stateless replay can't otherwise see. ``None`` (default) on
+            every backtest and paper path → behaviour byte-for-byte unchanged.
 
-    Returns dict with summary, equity_curve, trades, open_positions, deposits log, and the
-    external-injection log.
+    Returns dict with summary, equity_curve, trades, open_positions, deposits log, the
+    external-injection log, and the cash-override log.
     """
     # Determine effective scan windows for entry (primary + any extras)
     _effective_scan_times: tuple[str, ...] = strategy.scan_times if strategy.scan_times is not None else (strategy.scan_time,)
@@ -830,6 +838,7 @@ def run_backtest_v2(
                     _ext_seed[_sym] = _seed
     _ext_injected: set[str] = set()
     _external_log: list[dict] = []  # records each adopted position for /bot visibility
+    _cash_override_log: list[dict] = []  # records each broker cash mark — empty when none
 
     trading_day_idx: dict = {}  # date -> index for time stops
     sorted_days = sorted(prices["date"].unique())
@@ -881,6 +890,19 @@ def run_backtest_v2(
                     "entry_depth_pct": round(_entry_depth, 2) if _entry_depth is not None else None,
                     "cash_after": round(cash, 2),
                 })
+
+        # ---- Cash mark-to-broker ----
+        # Override simulated cash with the account's REAL free cash for this day so entry
+        # sizing (pct_equity allocation + the min_entry_cash gate) reflects the true account,
+        # absorbing manual sells / withdrawals the stateless replay can't see. Applied AFTER
+        # the deposit + adoption injections — it is the final word, since broker free cash
+        # already nets out money spent on adopted/manual positions. None (every backtest /
+        # paper path) → no-op, parity preserved.
+        if cash_override:
+            _ov = cash_override.get(str(day))
+            if _ov is not None:
+                cash = float(_ov)
+                _cash_override_log.append({"date": str(day), "cash": round(cash, 2)})
 
         day_prices = day_prices.sort_values("timestamp")
         day_idx = trading_day_idx[day]
@@ -1537,4 +1559,5 @@ def run_backtest_v2(
         "holdings_state": holdings_state,  # full per-symbol state dict (incl. adopted positions)
         "deposits": _deposit_log,  # list of {"date", "amount", "cash_after"} — empty when no deposits
         "external_injections": _external_log,  # adopted broker positions — empty when none
+        "cash_overrides": _cash_override_log,  # broker cash marks — empty when none
     }
