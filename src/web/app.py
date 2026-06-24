@@ -20,7 +20,7 @@ from src.core.db import close_pool, get_pool
 from src.core.logging import setup_logging
 from src.core.time import IST
 from src.web.auth import is_authenticated, is_viewer
-from src.web.routes import api, bot, dashboard, diagnose, health, login, portfolios, symbols, trades
+from src.web.routes import alerts, api, bot, dashboard, diagnose, health, login, portfolios, symbols, trades
 
 
 log = setup_logging("web")
@@ -97,4 +97,5 @@ app.include_router(trades.router)
 app.include_router(diagnose.router)
 app.include_router(symbols.router)
 app.include_router(bot.router)
+app.include_router(alerts.router)
 app.include_router(api.router)

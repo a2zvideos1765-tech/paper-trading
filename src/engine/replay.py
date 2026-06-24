@@ -365,6 +365,7 @@ async def replay_one_portfolio(
     record_intraday: bool = False,
     deposits: dict[str, float] | None = None,
     external_positions: dict[str, dict] | None = None,
+    cash_override: dict[str, float] | None = None,
 ) -> dict:
     """Run the engine for this portfolio against the given candles window.
     Returns the engine's full result dict and persists trades / positions / equity.
@@ -380,6 +381,10 @@ async def replay_one_portfolio(
     avg_price}}}) for the live real-money portfolio: positions the account holds
     that the engine didn't create, injected so the strategy manages their exits.
     None (default) → no adoption (all paper portfolios).
+
+    `cash_override` ({"YYYY-MM-DD": cash}) marks the engine's simulated cash to the
+    broker's real free cash on the keyed day(s) so entry sizing reflects the actual
+    account. The live trader passes {today: broker_free_cash}. None (default) → no-op.
     """
     clear_regime_cache()
     if not nifty_close.empty:
@@ -406,7 +411,8 @@ async def replay_one_portfolio(
     bound = replace(overridden, starting_cash=float(portfolio.capital))
 
     result = run_backtest_v2(candles, bound, charges, deposits=deposits,
-                             external_positions=external_positions)
+                             external_positions=external_positions,
+                             cash_override=cash_override)
 
     # Persist. Prefer the engine's full holdings dict (carries adopted positions, which
     # have no BUY trade and so can't be reconstructed from the trade list); fall back to

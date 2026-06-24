@@ -21,6 +21,32 @@ from datetime import date, datetime, timedelta
 # Matches the engine's scan-entry reason, e.g. "entry_scan_14:00_drop_-3%".
 _SCAN_REASON_RE = re.compile(r"entry_scan_(\d{2}:\d{2})")
 
+# Broker rejection codes that mean "this scrip is HARD-blocked" — exchange surveillance /
+# cautionary listing (ASM/GSM). No order override exists, so the bot quarantines the symbol
+# instead of re-firing a guaranteed-failed order on every signal. Deliberately NARROW:
+# transient/infra codes (e.g. AG7002 IP-not-whitelisted, session/rate-limit errors) must NOT
+# quarantine — those should keep retrying, not bench a tradeable symbol for months.
+_SURVEILLANCE_CODES = frozenset({"AB4036"})
+_REJECT_CODE_RE = re.compile(r"\[([A-Za-z0-9]+)\]")
+
+
+def surveillance_reject_code(error_text: str | None) -> str | None:
+    """Return the broker rejection code IF an order error is a surveillance/cautionary block
+    we should quarantine on (e.g. ``AB4036``), else ``None``.
+
+    The live trader records a placeOrder failure as ``Angel placeOrder rejected [CODE]: msg``;
+    this pulls the bracketed CODE and returns it only when it's a *permanent per-symbol* block.
+    A transient infra error (IP whitelist, rate limit, expired session) returns ``None`` so the
+    bot keeps retrying it normally instead of benching a tradeable symbol for three months.
+    """
+    if not error_text:
+        return None
+    m = _REJECT_CODE_RE.search(str(error_text))
+    if not m:
+        return None
+    code = m.group(1).upper()
+    return code if code in _SURVEILLANCE_CODES else None
+
 
 def scan_time_elapsed(reason: str, now_hhmm: str, bar_minutes: int = 5) -> bool:
     """For a scan-mode entry, True only once its scan BAR is complete today.

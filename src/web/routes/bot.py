@@ -298,6 +298,29 @@ async def api_bot_deposits() -> JSONResponse:
     ])
 
 
+# ---------- quarantine (AB4036 auto-skip) ----------
+
+@router.get("/api/bot/quarantine")
+async def api_bot_quarantine() -> JSONResponse:
+    """Symbols currently benched after a broker surveillance/cautionary block (e.g. AB4036).
+    Their BUYs are skipped until `expires_at`; the bench lifts automatically after ~3 months."""
+    rows = await fetch(
+        "SELECT symbol, reason_code, reason_text, quarantined_at, expires_at, hits "
+        "FROM real_quarantine WHERE expires_at > now() ORDER BY expires_at"
+    )
+    return JSONResponse([
+        {
+            "symbol": r["symbol"],
+            "reason_code": r["reason_code"],
+            "reason_text": r["reason_text"],
+            "quarantined_at": _iso(r["quarantined_at"]),
+            "expires_at": _iso(r["expires_at"]),
+            "hits": r["hits"],
+        }
+        for r in rows
+    ])
+
+
 # ---------- logs ----------
 
 @router.get("/api/bot/logs")

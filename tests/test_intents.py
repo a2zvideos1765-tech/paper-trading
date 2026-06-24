@@ -14,6 +14,7 @@ from src.engine.real_executor import (
     scan_time_elapsed,
     select_new_intents,
     sip_deposit_amount,
+    surveillance_reject_code,
 )
 
 
@@ -230,3 +231,29 @@ def test_reserved_shares_are_not_resold_within_a_tick():
     assert reconcile_sell_qty(engine_qty=2, broker_qty=6, reserved=6, fully_closed=True) == 0
     # partial tier clamps against what's left after the reservation
     assert reconcile_sell_qty(engine_qty=3, broker_qty=6, reserved=5, fully_closed=False) == 1
+
+
+# ---- surveillance_reject_code: AB4036 auto-skip quarantine trigger ----
+
+def test_ab4036_rejection_is_quarantined():
+    """The exact PARACABLES/UNIVCABLES case: a cautionary/surveillance block returns its
+    code so the caller benches the symbol instead of re-firing a doomed order each signal."""
+    err = "Angel placeOrder rejected [AB4036]: scrip not allowed for trading"
+    assert surveillance_reject_code(err) == "AB4036"
+
+
+def test_transient_infra_rejection_is_not_quarantined():
+    """An IP-whitelist / infra error must NOT bench a tradeable symbol — it should keep
+    retrying. Only permanent per-symbol blocks quarantine."""
+    assert surveillance_reject_code("Angel placeOrder rejected [AG7002]: IP not whitelisted") is None
+    assert surveillance_reject_code("Angel placeOrder rejected [AB1004]: insufficient funds") is None
+
+
+def test_reject_code_extraction_is_case_insensitive():
+    assert surveillance_reject_code("rejected [ab4036]: ...") == "AB4036"
+
+
+def test_no_code_or_empty_is_not_quarantined():
+    assert surveillance_reject_code("connection reset by peer") is None
+    assert surveillance_reject_code("") is None
+    assert surveillance_reject_code(None) is None

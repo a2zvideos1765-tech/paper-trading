@@ -40,6 +40,7 @@ from src.engine.real_executor import (
     scan_time_elapsed,
     select_new_intents,
     sip_deposit_amount,
+    surveillance_reject_code,
 )
 from src.engine.replay import (
     PortfolioRow,
@@ -344,6 +345,35 @@ async def deposits_map() -> dict[str, float]:
     return out
 
 
+# ---------- Surveillance quarantine (AB4036 auto-skip) ----------
+
+async def active_quarantine_symbols() -> set[str]:
+    """Engine symbols currently benched after a surveillance/cautionary rejection
+    (e.g. AB4036). Rows past their window are cleared first, so a scrip that leaves
+    exchange surveillance becomes tradeable again automatically — no manual upkeep."""
+    await conn_execute("DELETE FROM real_quarantine WHERE expires_at <= now()")
+    rows = await fetch("SELECT symbol FROM real_quarantine WHERE expires_at > now()")
+    return {r["symbol"] for r in rows}
+
+
+async def quarantine_symbol(symbol: str, code: str, text: str | None, months: int = 3) -> None:
+    """Bench a symbol for `months` after a hard broker block. Re-hitting it while benched
+    refreshes the window and bumps the hit count; it auto-clears once `expires_at` passes."""
+    await conn_execute(
+        """
+        INSERT INTO real_quarantine (symbol, reason_code, reason_text, quarantined_at, expires_at, hits)
+        VALUES ($1, $2, $3, now(), now() + make_interval(months => $4), 1)
+        ON CONFLICT (symbol) DO UPDATE SET
+            reason_code    = EXCLUDED.reason_code,
+            reason_text    = EXCLUDED.reason_text,
+            quarantined_at = now(),
+            expires_at     = now() + make_interval(months => $4),
+            hits           = real_quarantine.hits + 1
+        """,
+        symbol, code, (text or "")[:300], months,
+    )
+
+
 # ---------- Order placement + reconciliation (bot ON) ----------
 
 async def existing_intent_keys(portfolio_id: int) -> set[str]:
@@ -361,6 +391,7 @@ async def place_new_orders(
     available_cash: float | None = None,
     engine_target_qty: dict[str, int] | None = None,
     broker_qty: dict[str, int] | None = None,
+    quarantined: set[str] | None = None,
 ) -> int:
     """Place a CNC LIMIT order at the engine's decided price for each new intent.
     Records intent (status='pending') BEFORE the API call so a crash can't double-place.
@@ -394,6 +425,14 @@ async def place_new_orders(
         is_buy = str(trade["side"]).upper() == "BUY"
 
         if is_buy:
+            # Quarantine guard: a symbol the broker hard-blocks (surveillance/cautionary,
+            # e.g. AB4036) is benched for 3 months — skip its BUYs entirely so we don't
+            # re-fire a guaranteed-failed order on every signal. SELLs are unaffected, so a
+            # genuinely held position can still be exited.
+            if quarantined and sym in quarantined:
+                log.info("skip BUY — symbol quarantined (surveillance/cautionary block)",
+                         extra={"symbol": sym, "reason": trade.get("reason")})
+                continue
             # Real-cash guard: skip — don't even claim — an order the account can't
             # afford. ~0.4% buffer for brokerage/STT/stamp/GST.
             eff_qty = int(trade["qty"])
@@ -462,17 +501,27 @@ async def place_new_orders(
                      extra={"symbol": sym, "side": trade["side"], "qty": eff_qty,
                             "price": trade["price"], "angel_order_id": angel_order_id})
         except Exception as exc:  # noqa: BLE001
+            err = str(exc)
             await conn_execute(
                 "UPDATE real_orders SET status = 'error', error = $1, updated_at = now() "
                 "WHERE id = $2",
-                str(exc)[:300], order_row_id,
+                err[:300], order_row_id,
             )
             await conn_execute(
                 "INSERT INTO real_order_events (order_id, status, raw) VALUES ($1, 'error', $2)",
-                order_row_id, json.dumps({"error": str(exc)[:300]}),
+                order_row_id, json.dumps({"error": err[:300]}),
             )
             log.exception("real order placement failed",
                           extra={"symbol": sym, "intent_key": key})
+            # Auto-skip: if a BUY was hard-blocked (exchange surveillance / cautionary, e.g.
+            # AB4036), bench the symbol for 3 months so we stop re-firing a doomed order every
+            # signal. Auto-clears after the window if the scrip leaves surveillance.
+            if is_buy:
+                qcode = surveillance_reject_code(err)
+                if qcode:
+                    await quarantine_symbol(sym, qcode, err, months=3)
+                    log.warning("symbol quarantined after surveillance rejection",
+                                extra={"symbol": sym, "code": qcode, "months": 3})
     return placed
 
 
@@ -555,6 +604,16 @@ async def tick() -> None:
     broker_qty = {eng: info["qty"] for eng, info in broker_by_engine.items()}
     external_map = await external_positions_map()
 
+    # Mark the engine's simulated cash to the broker's REAL free cash this tick so entry
+    # sizing reflects the actual account, absorbing manual sells / withdrawals the stateless
+    # replay can't see. One account-wide free-cash figure (single live portfolio).
+    broker_cash = funds.get("available_cash")
+    cash_override = {today_str: float(broker_cash)} if broker_cash is not None else None
+
+    # Symbols benched after a surveillance/cautionary block (AB4036) — their BUYs are skipped
+    # until the 3-month window lapses (auto-clears if the scrip leaves surveillance).
+    quarantined = await active_quarantine_symbols()
+
     until = now_ist().replace(second=0, microsecond=0)
     earliest_start = min(p.started_at for p in portfolios)
     candles = await load_candles_window(equity_symbols, CANDLE_INTERVAL, earliest_start, until)
@@ -574,6 +633,7 @@ async def tick() -> None:
                 p, strategy, p_candles, CHARGES, nifty, sensex, vix,
                 record_intraday=True, deposits=deposits or None,
                 external_positions=external_map or None,
+                cash_override=cash_override,
             )
             if result.get("validation_errors"):
                 continue
@@ -607,7 +667,8 @@ async def tick() -> None:
 
             total_placed += await place_new_orders(
                 client, p, sym_map, ready, available_cash=funds.get("available_cash"),
-                engine_target_qty=engine_target_qty, broker_qty=broker_qty)
+                engine_target_qty=engine_target_qty, broker_qty=broker_qty,
+                quarantined=quarantined)
 
             # Surface signals too old to place, so a skipped entry is visible
             # rather than looking like a silent miss.

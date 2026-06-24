@@ -146,6 +146,37 @@ def test_sip_deposit_injection_funds_a_later_entry():
     assert r_dep["deposits"][0]["date"] == drop_day
 
 
+def test_cash_override_marks_engine_cash_to_broker():
+    """Cash mark-to-broker: cash_override={date: value} replaces the engine's simulated
+    cash on that day so entry sizing reflects the account's REAL free cash. A near-broke
+    engine that can't enter becomes able to once its cash is marked up — and
+    cash_override=None is byte-for-byte the no-override run (parity preserved)."""
+    from dataclasses import replace
+    days = _trading_days(datetime(2025, 1, 1).date(), 60)
+    closes = [100.0] * 25 + [94.0] + [94.0 + (145.0 - 94.0) * ((i + 1) / 30) for i in range(30)]
+    while len(closes) < len(days):
+        closes.append(closes[-1])
+    df = _build_history_one_symbol("ACME", list(zip(days, closes)))
+
+    # Start near-broke so the day-26 entry can't fire (S6 needs ~₹10k).
+    base = replace(get("S6_tiered_exit"), starting_cash=500.0)
+    r_plain = run_backtest_v2(df, base, ChargeConfigV2())
+    assert not any(t["side"] == "BUY" for t in r_plain["trades"]), "too poor to buy without a cash mark"
+    assert r_plain["cash_overrides"] == [], "no override → empty override log"
+
+    # Parity: cash_override=None must be byte-for-byte the no-override run.
+    r_none = run_backtest_v2(df, base, ChargeConfigV2(), cash_override=None)
+    assert r_none["trades"] == r_plain["trades"], "None override must not change engine output"
+
+    # Mark cash to ₹50k on the drop day → the engine now sizes off real cash and enters.
+    drop_day = str(days[25])
+    r_ov = run_backtest_v2(df, base, ChargeConfigV2(), cash_override={drop_day: 50_000.0})
+    assert any(t["side"] == "BUY" for t in r_ov["trades"]), "marked-up cash should fund the entry"
+    assert r_ov["cash_overrides"], "override log should record the mark"
+    assert r_ov["cash_overrides"][0]["date"] == drop_day
+    assert r_ov["cash_overrides"][0]["cash"] == 50_000.0
+
+
 def test_external_position_is_adopted_and_managed():
     """Broker adoption: a position the engine didn't create (passed via
     external_positions={date: {symbol: {qty, avg_price}}}) is injected into holdings
