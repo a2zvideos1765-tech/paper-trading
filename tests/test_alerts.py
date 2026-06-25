@@ -64,6 +64,21 @@ def test_severity_tracks_level_even_for_rate_limit():
     assert sev == "error"
 
 
+def test_rate_limit_signal_in_extra_field_is_counted():
+    """The exact poller case: msg is generic, the rate-limit hint is in an extra=
+    field. _scan_file passes msg + extras + exc to classify, so passing the extras
+    text as the second arg here must still classify as rate_limit (else the bundle
+    under-counts rate limits — the bug the live debug bundle exposed)."""
+    # poller: log.warning("getCandleData status=false", extra={"angel_message": "Too many requests"})
+    cat, _ = classify("WARNING", "getCandleData status=false",
+                      '{"symbol": "HDFCBANK", "angel_message": "Too many requests"}')
+    assert cat == "rate_limit"
+    # poller: log.error("poll failed", extra={"err": "...Access denied because of exceeding access rate"})
+    cat, _ = classify("ERROR", "poll failed",
+                      '{"symbol": "MAXHEALTH", "err": "Access denied because of exceeding access rate"}')
+    assert cat == "rate_limit"
+
+
 # ---- build_debug_bundle ----
 
 def _sample_data():

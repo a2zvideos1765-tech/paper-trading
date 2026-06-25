@@ -130,7 +130,12 @@ def load_settings() -> Settings:
         dashboard_password=_req("DASHBOARD_PASSWORD"),
         viewer_password=(os.getenv("VIEWER_PASSWORD") or None),
         session_secret=_req("SESSION_SECRET"),
-        poller_interval_seconds=int(_opt("POLLER_INTERVAL_SECONDS", "60")),
+        # 150s, not 60s: the poller sweeps the universe sequentially with ~1.25s
+        # rate-limit pacing per symbol, so N symbols cost ~1.25*N seconds before
+        # any network time. At ~73 symbols a 60s tick is physically impossible and
+        # the sweep falls minutes behind real-time. Live bars are 5-min, so 150s
+        # still refreshes the forming bar 2-3x before it finalises. Override per VPS.
+        poller_interval_seconds=int(_opt("POLLER_INTERVAL_SECONDS", "150")),
         trader_interval_seconds=int(_opt("TRADER_INTERVAL_SECONDS", "60")),
         trader_offset_seconds=int(_opt("TRADER_OFFSET_SECONDS", "5")),
         real_trader_intent_max_age_days=int(_opt("REAL_TRADER_INTENT_MAX_AGE_DAYS", "1")),

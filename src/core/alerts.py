@@ -45,6 +45,10 @@ _TAIL_LINES = 4000
 _PER_APP_CAP = 150
 _FEED_CAP = 400
 
+# Run-once / nightly crons (not always-on runners). They're *expected* to be idle
+# between runs, so a stale heartbeat is normal — only alert if they actually errored.
+_ONESHOT_APPS = frozenset({"backfill", "backfill_queue", "instruments"})
+
 
 def classify(level: str, msg: str, exc: str = "") -> tuple[str, str]:
     """Map a log line to (category, severity).
@@ -118,14 +122,22 @@ def _scan_file(app: str, path: str, since: datetime) -> list[dict]:
 
         msg = str(e.get("msg", ""))
         exc = str(e.get("exc", "")) if e.get("exc") else ""
-        category, severity = classify(level, msg, exc)
 
         # Compact dump of any extra=… fields the caller attached, for context.
         skip = {"ts", "level", "logger", "msg", "exc"}
         extras = {k: v for k, v in e.items() if k not in skip}
+        extras_text = json.dumps(extras, default=str) if extras else ""
+
+        # Classify against msg + extras + exc — the rate-limit / reject signal
+        # frequently lives in an extra= field, not the bare msg. The poller logs
+        # msg="getCandleData status=false" with extra angel_message="Too many
+        # requests", and msg="poll failed" with extra err="…exceeding access
+        # rate"; classifying on msg alone mis-files both as plain warnings.
+        category, severity = classify(level, msg, f"{extras_text}\n{exc}")
+
         detail_parts = [msg]
-        if extras:
-            detail_parts.append(json.dumps(extras, default=str))
+        if extras_text:
+            detail_parts.append(extras_text)
         if exc:
             detail_parts.append(exc)
 
@@ -171,6 +183,9 @@ async def _collect_heartbeats() -> tuple[list[dict], list[dict]]:
             "last_beat": _ist_iso(last),
             "stale": stale,
         })
+        # Don't flag a nightly/one-shot cron as "stale" — idle is its normal state.
+        if r["app"] in _ONESHOT_APPS and r["status"] != "error":
+            continue
         if r["status"] == "error" or stale:
             cat = "stale" if stale else "error"
             mins = int((now - last).total_seconds() // 60)
